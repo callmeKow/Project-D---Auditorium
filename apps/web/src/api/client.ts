@@ -1,4 +1,17 @@
-import type { AvatarPresetId, PerformanceFormat, ReportDTO, RoomDTO, SeatDTO, UserProfile } from '@vmw/contracts';
+import type {
+  AnalyticsSummaryDTO,
+  AvatarPresetId,
+  ConcertDTO,
+  LightingPreset,
+  PerformanceFormat,
+  ReportDTO,
+  RoomDTO,
+  RoomState,
+  SeatDTO,
+  SetlistItemDTO,
+  UserProfile,
+  VenueStyle,
+} from '@vmw/contracts';
 
 const API_BASE = '/api';
 
@@ -24,6 +37,7 @@ export const apiClient = {
     password: string;
     displayName: string;
     ageConfirmed16Plus: boolean;
+    birthDate?: string;
     avatarPresetId?: AvatarPresetId;
     role?: 'AUDIENCE' | 'ARTIST';
   }) {
@@ -55,6 +69,14 @@ export const apiClient = {
     );
   },
 
+  exportMyData(token: string) {
+    return request<{ profile: UserProfile; exportedAt: string; policy: string }>('/users/me/export', undefined, token);
+  },
+
+  deleteMyAccount(token: string) {
+    return request<{ ok: boolean }>('/users/me', { method: 'DELETE' }, token);
+  },
+
   listRooms() {
     return request<RoomDTO[]>('/rooms');
   },
@@ -74,11 +96,45 @@ export const apiClient = {
       concertTitle: string;
       genre: string;
       format: PerformanceFormat;
+      venueStyle?: VenueStyle;
       isSpontaneous: boolean;
+      isPrivate?: boolean;
+      passcode?: string;
     },
     token: string
   ) {
     return request<RoomDTO>('/rooms', { method: 'POST', body: JSON.stringify(payload) }, token);
+  },
+
+  setRoomState(roomId: string, state: RoomState, token: string) {
+    return request<RoomDTO>(`/rooms/${roomId}/state`, { method: 'PATCH', body: JSON.stringify({ state }) }, token);
+  },
+
+  addSetlistItem(
+    roomId: string,
+    payload: {
+      title?: string;
+      artistName?: string;
+      durationSec?: number;
+      mode?: 'LIVE' | 'PRERECORDED';
+      lightingPreset?: LightingPreset;
+      youtubeUrl?: string;
+    },
+    token: string
+  ) {
+    return request<SetlistItemDTO>(`/rooms/${roomId}/setlist`, { method: 'POST', body: JSON.stringify(payload) }, token);
+  },
+
+  removeSetlistItem(roomId: string, itemId: string, token: string) {
+    return request<ConcertDTO>(`/rooms/${roomId}/setlist/${itemId}`, { method: 'DELETE' }, token);
+  },
+
+  invitePerformer(roomId: string, performerUserId: string, token: string) {
+    return request<ConcertDTO>(
+      `/rooms/${roomId}/performers/invite`,
+      { method: 'POST', body: JSON.stringify({ performerUserId }) },
+      token
+    );
   },
 
   holdSeat(roomId: string, seatId: string, userId: string) {
@@ -86,6 +142,17 @@ export const apiClient = {
       method: 'POST',
       body: JSON.stringify({ userId }),
     });
+  },
+
+  reserveSeat(roomId: string, seatId: string, userId: string) {
+    return request<SeatDTO>(`/rooms/${roomId}/seats/${seatId}/reserve`, {
+      method: 'POST',
+      body: JSON.stringify({ userId }),
+    });
+  },
+
+  toggleSeatLock(roomId: string, seatId: string, token: string) {
+    return request<SeatDTO>(`/rooms/${roomId}/seats/${seatId}/lock`, { method: 'POST' }, token);
   },
 
   submitReport(payload: {
@@ -100,6 +167,10 @@ export const apiClient = {
 
   listReports(token: string) {
     return request<ReportDTO[]>('/reports', undefined, token);
+  },
+
+  getAnalyticsSummary(token: string) {
+    return request<AnalyticsSummaryDTO>('/analytics/summary', undefined, token);
   },
 
   resolveReport(reportId: string, token: string) {

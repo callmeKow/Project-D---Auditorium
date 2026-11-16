@@ -9,6 +9,7 @@ import { SeatSelectionPage } from './pages/SeatSelectionPage';
 import { AuditoriumPage } from './pages/AuditoriumPage';
 import { PerformerSetupPage } from './pages/PerformerSetupPage';
 import { AdminConsolePage } from './pages/AdminConsolePage';
+import { ProfilePage } from './pages/ProfilePage';
 
 export function App() {
   return (
@@ -25,6 +26,7 @@ export function App() {
             <Route path="/room/:roomId" element={<AuditoriumPage />} />
             <Route path="/performer/:roomId/setup" element={<PerformerSetupPage />} />
             <Route path="/admin" element={<AdminConsolePage />} />
+            <Route path="/profile" element={<ProfilePage />} />
           </Routes>
         </div>
       </BrowserRouter>

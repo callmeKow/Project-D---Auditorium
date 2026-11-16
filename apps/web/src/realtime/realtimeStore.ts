@@ -3,11 +3,13 @@ import type {
   AvatarPresetId,
   AvatarTransformPayload,
   ChatMessageDTO,
+  ConcertDTO,
+  LightingPreset,
   MidiNoteEventPayload,
+  ReactionType,
   RealtimeClientMessage,
   RealtimeServerMessage,
   RoomDTO,
-  SetlistItemDTO,
   UserRole,
 } from '@vmw/contracts';
 
@@ -19,25 +21,57 @@ export interface AvatarRuntimeEntry extends AvatarTransformPayload {
   targetPosition: [number, number, number];
   targetRotationY: number;
   lastMidiAt: number;
-  lastReaction?: 'CLAP' | 'CHEER' | 'WAVE' | 'DANCE';
+  lastReaction?: ReactionType;
   reactionUntil: number;
+  flowerBurstAt: number;
+  flowerBurstUntil: number;
 }
 
 type Listener = () => void;
+
+interface ConnectParams {
+  roomId: string;
+  userId: string;
+  displayName: string;
+  role: UserRole;
+  avatarPresetId: AvatarPresetId;
+  passcode?: string;
+}
 
 class RealtimeRoomStore {
   private ws: WebSocket | null = null;
   public avatars = new Map<string, AvatarRuntimeEntry>();
   public room: RoomDTO | null = null;
   public chat: ChatMessageDTO[] = [];
-  public lightingPreset: SetlistItemDTO['lightingPreset'] = 'WARM_CHAMBER';
+  public lightingPreset: LightingPreset = 'WARM_CHAMBER';
   public applauseUntil = 0;
   public connected = false;
+  public reconnecting = false;
+  public reconnectAttempt = 0;
+  public pingMs: number | null = null;
+  public serverClockOffsetMs = 0;
   public lastMidiLatencyMs: number | null = null;
   public moderationNotice: string | null = null;
+  public systemNotice: string | null = null;
 
   private listeners = new Set<Listener>();
+  private signalHandler: ((fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: unknown) => void) | null = null;
+  private peerChangeHandler: ((type: 'JOIN' | 'LEAVE', userId: string) => void) | null = null;
   private seq = 0;
+  private lastConnectParams: ConnectParams | null = null;
+  private manualDisconnect = false;
+  private reconnectTimer: number | null = null;
+  private pingTimer: number | null = null;
+
+  setSignalHandler(
+    handler: ((fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: unknown) => void) | null
+  ) {
+    this.signalHandler = handler;
+  }
+
+  setPeerChangeHandler(handler: ((type: 'JOIN' | 'LEAVE', userId: string) => void) | null) {
+    this.peerChangeHandler = handler;
+  }
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -48,25 +82,42 @@ class RealtimeRoomStore {
     for (const fn of this.listeners) fn();
   }
 
-  connect(params: {
-    roomId: string;
-    userId: string;
-    displayName: string;
-    role: UserRole;
-    avatarPresetId: AvatarPresetId;
-  }) {
-    this.disconnect();
+  connect(params: ConnectParams) {
+    this.manualDisconnect = false;
+    this.lastConnectParams = params;
+    this.openSocket(params);
+  }
+
+  private openSocket(params: ConnectParams) {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws`;
-    this.ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
       this.connected = true;
+      this.reconnecting = false;
+      this.reconnectAttempt = 0;
       this.send({ type: 'JOIN_ROOM', ...params });
+      this.send({ type: 'PING', clientSentAt: performance.now() });
+      if (this.pingTimer !== null) clearInterval(this.pingTimer);
+      this.pingTimer = window.setInterval(() => {
+        this.send({ type: 'PING', clientSentAt: performance.now() });
+      }, 2000);
       this.emit();
     };
 
-    this.ws.onmessage = (ev) => {
+    ws.onmessage = (ev) => {
       let msg: RealtimeServerMessage;
       try {
         msg = JSON.parse(ev.data);
@@ -76,6 +127,9 @@ class RealtimeRoomStore {
 
       switch (msg.type) {
         case 'ROOM_SNAPSHOT': {
+          if (msg.serverTime) {
+            this.serverClockOffsetMs = msg.serverTime - Date.now();
+          }
           this.room = msg.room;
           this.chat = msg.chat;
           this.avatars.clear();
@@ -86,11 +140,21 @@ class RealtimeRoomStore {
               targetRotationY: av.rotationY,
               lastMidiAt: 0,
               reactionUntil: 0,
+              flowerBurstAt: 0,
+              flowerBurstUntil: 0,
             });
           }
           const current = msg.room.concert.setlist[msg.room.concert.currentSetlistIndex];
           if (current) this.lightingPreset = current.lightingPreset;
           this.emit();
+          break;
+        }
+
+        case 'ROOM_STATE_UPDATED': {
+          if (this.room) {
+            this.room.state = msg.roomState;
+            this.emit();
+          }
           break;
         }
 
@@ -109,15 +173,21 @@ class RealtimeRoomStore {
               targetRotationY: msg.avatar.rotationY,
               lastMidiAt: 0,
               reactionUntil: 0,
+              flowerBurstAt: 0,
+              flowerBurstUntil: 0,
             });
+            this.peerChangeHandler?.('JOIN', msg.avatar.userId);
+            this.emit();
           }
-          // Intentionally DO NOT call this.emit() on every frame/transform update!
+          // Intentionally DO NOT call this.emit() on transform updates!
           // R3F useFrame reads `this.avatars` directly at 60fps.
           break;
         }
 
         case 'AVATAR_LEFT': {
           this.avatars.delete(msg.userId);
+          this.peerChangeHandler?.('LEAVE', msg.userId);
+          this.emit();
           break;
         }
 
@@ -133,6 +203,9 @@ class RealtimeRoomStore {
         case 'CONCERT_STATE_UPDATED': {
           if (this.room) {
             this.room.concert = msg.concert;
+            if (msg.fallbackNotice) {
+              this.systemNotice = msg.fallbackNotice;
+            }
             this.emit();
           }
           break;
@@ -147,9 +220,18 @@ class RealtimeRoomStore {
         case 'REACTION': {
           const av = this.avatars.get(msg.userId);
           if (av) {
+            const now = performance.now();
             av.lastReaction = msg.reaction;
-            av.reactionUntil = performance.now() + 2500;
-            av.animation = msg.reaction;
+            av.reactionUntil = now + 2500;
+            av.animation = msg.reaction === 'FLOWER' ? 'CHEER' : msg.reaction;
+            if (msg.reaction === 'FLOWER' && now - av.flowerBurstAt > 250) {
+              av.flowerBurstAt = now;
+              av.flowerBurstUntil = now + 2400;
+            }
+          }
+          if (msg.reaction === 'FLOWER') {
+            this.systemNotice = `🌸 ${msg.displayName ?? 'Audience'} sent a free Virtual Flower to the stage!`;
+            this.emit();
           }
           break;
         }
@@ -187,19 +269,83 @@ class RealtimeRoomStore {
 
         case 'MODERATION_ACTION': {
           this.moderationNotice = `${msg.action}: ${msg.reason}`;
+          if (msg.action === 'KICK' || msg.action === 'BAN') {
+            this.manualDisconnect = true;
+          }
+          this.emit();
+          break;
+        }
+
+        case 'WEBRTC_SIGNAL': {
+          this.signalHandler?.(msg.fromUserId, msg.channel ?? 'CONCERT', msg.signal);
+          break;
+        }
+
+        case 'PONG': {
+          const rtt = Math.max(1, Math.round(performance.now() - msg.clientSentAt));
+          this.pingMs = rtt;
+          this.serverClockOffsetMs = msg.serverTime - (Date.now() - rtt / 2);
           this.emit();
           break;
         }
       }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
       this.connected = false;
-      this.emit();
+      this.pingMs = null;
+      if (this.pingTimer !== null) {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
+      }
+      if (!this.manualDisconnect && this.lastConnectParams && this.reconnectAttempt < 5) {
+        this.reconnecting = true;
+        this.reconnectAttempt += 1;
+        const delayMs = Math.min(8000, 1000 * Math.pow(2, this.reconnectAttempt - 1));
+        this.emit();
+        this.reconnectTimer = window.setTimeout(() => {
+          if (this.lastConnectParams && !this.manualDisconnect) {
+            this.openSocket(this.lastConnectParams);
+          }
+        }, delayMs);
+      } else {
+        this.reconnecting = false;
+        this.emit();
+      }
     };
   }
 
   send(msg: RealtimeClientMessage) {
+    if (msg.type === 'REACTION_SEND' && this.lastConnectParams) {
+      const localAv = this.avatars.get(this.lastConnectParams.userId);
+      if (localAv) {
+        const now = performance.now();
+        localAv.lastReaction = msg.reaction;
+        localAv.reactionUntil = now + 2500;
+        localAv.animation = msg.reaction === 'FLOWER' ? 'CHEER' : msg.reaction;
+        if (msg.reaction === 'FLOWER') {
+          localAv.flowerBurstAt = now;
+          localAv.flowerBurstUntil = now + 2400;
+        }
+      }
+    }
+    if (msg.type === 'LEAVE_SEAT' && this.lastConnectParams) {
+      const userId = this.lastConnectParams.userId;
+      const localAv = this.avatars.get(userId);
+      if (localAv) {
+        localAv.seatId = undefined;
+        localAv.animation = 'STAND';
+      }
+      if (this.room) {
+        for (const s of this.room.seats) {
+          if (s.occupiedByUserId === userId) {
+            s.occupiedByUserId = undefined;
+            if (s.state === 'OCCUPIED') s.state = 'AVAILABLE';
+          }
+        }
+        this.emit();
+      }
+    }
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
@@ -211,17 +357,56 @@ class RealtimeRoomStore {
   }
 
   sendMidi(event: MidiNoteEventPayload) {
+    // Also trigger local avatar animation immediately for low-latency feedback
+    const localAv = this.avatars.get(event.userId);
+    if (localAv) {
+      localAv.lastMidiAt = performance.now();
+      localAv.animation =
+        event.instrument === 'GUITAR' || event.instrument === 'BASS'
+          ? 'PLAY_GUITAR'
+          : event.instrument === 'VIOLIN' || event.instrument === 'CELLO'
+            ? 'PLAY_VIOLIN'
+            : event.instrument === 'DRUMS'
+              ? 'PLAY_DRUMS'
+              : 'PLAY_PIANO';
+    }
     this.send({ type: 'MIDI_EVENT', event });
   }
 
+  getSyncedPlaybackSec(concert?: ConcertDTO | null): number {
+    if (!concert) return 0;
+    const isPlaying = concert.trackPlaying ?? (concert.state === 'LIVE' || concert.state === 'SOUND_CHECK');
+    if (isPlaying && concert.trackStartedAtServerMs) {
+      return Math.max(0, (Date.now() + this.serverClockOffsetMs - concert.trackStartedAtServerMs) / 1000);
+    }
+    return concert.trackPausedAtSec ?? 0;
+  }
+
   disconnect() {
+    this.manualDisconnect = true;
+    this.lastConnectParams = null;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.pingTimer !== null) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
     if (this.ws) {
+      this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }
     this.avatars.clear();
     this.room = null;
+    this.chat = [];
+    this.moderationNotice = null;
+    this.systemNotice = null;
+    this.pingMs = null;
     this.connected = false;
+    this.reconnecting = false;
+    this.reconnectAttempt = 0;
   }
 }
 

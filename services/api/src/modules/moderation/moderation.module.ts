@@ -1,9 +1,24 @@
 import crypto from 'node:crypto';
 import type { ReportDTO, UserRole } from '@vmw/contracts';
+import { loadSnapshot, saveSnapshot } from '../../infrastructure/persistence.js';
+import { recordAnalyticsEvent } from '../analytics/analytics.module.js';
 
 const reports: ReportDTO[] = [];
 const mutedUsersByRoom = new Map<string, Set<string>>();
 const bannedUsersByRoom = new Map<string, Set<string>>();
+
+function hydrateReports() {
+  const snapshot = loadSnapshot();
+  if (snapshot?.reports && Array.isArray(snapshot.reports)) {
+    reports.push(...(snapshot.reports as ReportDTO[]));
+  }
+}
+
+hydrateReports();
+
+function persistReports() {
+  saveSnapshot({ reports });
+}
 
 export function submitReport(params: {
   roomId: string;
@@ -28,6 +43,8 @@ export function submitReport(params: {
     createdAt: Date.now(),
   };
   reports.unshift(report);
+  persistReports();
+  recordAnalyticsEvent({ type: 'REPORT_SUBMITTED', userId: params.reporterUserId, roomId: params.roomId });
   return report;
 }
 
@@ -42,6 +59,7 @@ export function resolveReport(reportId: string, actorRoles: UserRole[]): ReportD
   const rep = reports.find((r) => r.id === reportId);
   if (!rep) throw new Error('REPORT_NOT_FOUND');
   rep.status = 'RESOLVED';
+  persistReports();
   return rep;
 }
 
@@ -78,4 +96,22 @@ export function isUserMuted(roomId: string, userId: string): boolean {
 
 export function isUserBanned(roomId: string, userId: string): boolean {
   return bannedUsersByRoom.get(roomId)?.has(userId) ?? false;
+}
+
+// TBD-20: AI-assisted profanity/spam filter (never auto-perm-bans)
+const BLOCKED_TERMS = ['scam', 'phishing', 'hate', 'spamlink'];
+
+export function filterChatText(rawText: string): { allowed: boolean; text: string; flagged: boolean } {
+  let text = rawText.trim().slice(0, 300);
+  if (!text) return { allowed: false, text: '', flagged: false };
+
+  let flagged = false;
+  for (const term of BLOCKED_TERMS) {
+    const regex = new RegExp(`\\b${term}\\b`, 'gi');
+    if (regex.test(text)) {
+      flagged = true;
+      text = text.replace(regex, '***');
+    }
+  }
+  return { allowed: true, text, flagged };
 }
