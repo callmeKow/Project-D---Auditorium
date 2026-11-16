@@ -33,20 +33,22 @@ export function PerformerSetupPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
+  const savedAudio = audioEngine.getCaptureSettings();
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState('');
+  const [selectedDeviceId, setSelectedDeviceId] = useState(savedAudio.deviceId);
   const [inputMode, setInputMode] = useState<AudioInputMode>('MICROPHONE');
   const [instrument, setInstrument] = useState<InstrumentType>('PIANO');
-  const [monitoring, setMonitoring] = useState(true); // Discord-style mic playback ON by default during Sound Check
-  const [monitorVolume, setMonitorVolume] = useState(1.0);
-  const [inputGain, setInputGain] = useState(1.4); // 140% clean preamp boost with soft limiter
+  const [monitoring, setMonitoring] = useState(savedAudio.monitorEnabled); // Persisted Discord-style mic playback
+  const [monitorVolume, setMonitorVolume] = useState(savedAudio.monitorVolume);
+  const [inputGain, setInputGain] = useState(savedAudio.inputGain);
+  const [noiseGate, setNoiseGate] = useState(savedAudio.noiseGateThreshold);
   // Default browser VoIP DSP to OFF so Chrome AEC/Noise-Gate never chops off live playback or quiet voice/instruments
-  const [echoCancellation, setEchoCancellation] = useState(false);
-  const [noiseSuppression, setNoiseSuppression] = useState(false);
+  const [echoCancellation, setEchoCancellation] = useState(savedAudio.echoCancellation);
+  const [noiseSuppression, setNoiseSuppression] = useState(savedAudio.noiseSuppression);
   const [autoGainControl, setAutoGainControl] = useState(false);
   const [capturePending, setCapturePending] = useState(false);
   const [capturing, setCapturing] = useState(Boolean(audioEngine.getStream()));
-  const [meter, setMeter] = useState<AudioMeterSnapshot>({ rms: 0, peak: 0, clipping: false });
+  const [meter, setMeter] = useState<AudioMeterSnapshot>({ rms: 0, peak: 0, clipping: false, gateOpen: true });
   const [midiStatus, setMidiStatus] = useState('Not initialized');
   const [midiReady, setMidiReady] = useState(false);
   const [lastMidiNote, setLastMidiNote] = useState<number | null>(null);
@@ -458,21 +460,65 @@ export function PerformerSetupPage() {
               </div>
             )}
 
-            <div className="rounded-xl border border-stone-800 bg-stone-950 p-3.5">
-              <div className="flex justify-between text-[11px] text-stone-400">
-                <span>Input Level (RMS / Peak Hold)</span>
-                <span className={meter.clipping ? 'font-bold text-red-400' : 'font-mono text-emerald-400'}>
-                  {meter.clipping
-                    ? 'CLIPPING!'
-                    : `${Math.min(100, Math.round(Math.max(meter.rms * 350, meter.peak * 110)))}% (Peak ${Math.round(meter.peak * 100)}%)`}
-                </span>
+            <div className="space-y-2.5 rounded-xl border border-stone-800 bg-stone-950 p-3.5">
+              <div>
+                <div className="flex justify-between text-[11px] text-stone-400">
+                  <span>Input Level (RMS / Peak Hold)</span>
+                  <span
+                    className={
+                      meter.clipping
+                        ? 'font-bold text-red-400'
+                        : noiseGate > 0 && !meter.gateOpen
+                          ? 'font-mono text-amber-400'
+                          : 'font-mono text-emerald-400'
+                    }
+                  >
+                    {meter.clipping
+                      ? 'CLIPPING!'
+                      : `${Math.min(100, Math.round(Math.max(meter.rms * 350, meter.peak * 110)))}% (Peak ${Math.round(meter.peak * 100)}%)${
+                          noiseGate > 0 && !meter.gateOpen ? ' • Đang lọc ồn' : ''
+                        }`}
+                  </span>
+                </div>
+                <div className="relative mt-2 h-3 w-full overflow-hidden rounded-full bg-stone-800">
+                  <div
+                    className={`h-full transition-all duration-75 ${
+                      meter.clipping
+                        ? 'bg-red-500'
+                        : noiseGate > 0 && !meter.gateOpen
+                          ? 'bg-amber-500/80'
+                          : 'bg-gradient-to-r from-emerald-500 via-emerald-400 to-lime-400'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.round(Math.max(meter.rms * 350, meter.peak * 110)))}%` }}
+                  />
+                  {noiseGate > 0 && (
+                    <div
+                      className="pointer-events-none absolute bottom-0 top-0 w-0.5 bg-white shadow-[0_0_4px_rgba(255,255,255,0.95)]"
+                      style={{ left: `${Math.round(noiseGate * 100)}%` }}
+                    />
+                  )}
+                </div>
               </div>
-              <div className="mt-2 h-3 w-full overflow-hidden rounded-full bg-stone-800">
-                <div
-                  className={`h-full transition-all duration-75 ${
-                    meter.clipping ? 'bg-red-500' : 'bg-gradient-to-r from-emerald-500 via-amber-400 to-red-500'
-                  }`}
-                  style={{ width: `${Math.min(100, Math.round(Math.max(meter.rms * 350, meter.peak * 110)))}%` }}
+
+              <div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-amber-200">Mức độ lọc tiếng ồn (Discord Gate)</span>
+                  <span className="font-mono font-semibold text-amber-300">
+                    {noiseGate === 0 ? 'Tắt' : `${Math.round(noiseGate * 100)}%`}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={0.7}
+                  step={0.02}
+                  value={noiseGate}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setNoiseGate(val);
+                    audioEngine.setNoiseGate(val);
+                  }}
+                  className="mt-1 w-full accent-amber-400"
                 />
               </div>
             </div>

@@ -218,6 +218,8 @@ function StageYouTubeCurtains({
   youtubeVideoId,
   isPlaying,
   audienceMuted,
+  musicVolume = 80,
+  musicMuted = false,
   ytIframeRef,
   onAutoplayBlocked,
 }: {
@@ -225,20 +227,37 @@ function StageYouTubeCurtains({
   youtubeVideoId?: string;
   isPlaying: boolean;
   audienceMuted: boolean;
+  musicVolume?: number;
+  musicMuted?: boolean;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
 }) {
   const leftCurtainRef = useRef<THREE.Mesh>(null);
   const rightCurtainRef = useRef<THREE.Mesh>(null);
   const localIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const preloadMapRef = useRef<Map<string, HTMLIFrameElement>>(new Map());
   const openProgressRef = useRef(0);
   const [screenVisible, setScreenVisible] = useState(false);
   const [ytActiveVisual, setYtActiveVisual] = useState(false);
   const ytStateRef = useRef<number>(-1);
   const ytTimeRef = useRef<number>(0);
   const ytDurationRef = useRef<number>(0);
+  const ytMutedRef = useRef<boolean>(true);
   const lastSeekAtRef = useRef<number>(0);
   const loadedAtRef = useRef<number>(performance.now());
+
+  // Collect up to 4 unique YouTube tracks from Setlist (active + next 3 upcoming) to pre-buffer in RAM
+  const preloadedVideoIds: string[] = [];
+  if (youtubeVideoId) preloadedVideoIds.push(youtubeVideoId);
+  if (concert.setlist.length > 0) {
+    for (let offset = 0; offset < concert.setlist.length && preloadedVideoIds.length < 4; offset++) {
+      const idx = (concert.currentSetlistIndex + offset) % concert.setlist.length;
+      const vid = concert.setlist[idx]?.youtubeVideoId;
+      if (vid && !preloadedVideoIds.includes(vid)) {
+        preloadedVideoIds.push(vid);
+      }
+    }
+  }
 
   const getLoopAwareSyncSec = (c: RoomDTO['concert']) => {
     const raw = realtimeStore.getSyncedPlaybackSec(c);
@@ -246,25 +265,20 @@ function StageYouTubeCurtains({
     return dur > 1 ? raw % dur : raw;
   };
 
-  // Capture initial server-synced start second per video/epoch so iframe URL stays stable
-  const initialStartSec = useRef<number>(0);
-  const lastVideoKeyRef = useRef<string>('');
-  const videoKey = `${youtubeVideoId ?? ''}:${concert.trackStartedAtServerMs ?? 0}`;
-  if (videoKey !== lastVideoKeyRef.current) {
-    lastVideoKeyRef.current = videoKey;
-    initialStartSec.current = Math.floor(realtimeStore.getSyncedPlaybackSec(concert));
-  }
-
-  const shouldOpen = Boolean(youtubeVideoId && isPlaying);
+  const isPausedState = concert.state === 'PAUSED' || concert.state === 'INTERMISSION';
+  const shouldOpen = Boolean(youtubeVideoId && (isPlaying || isPausedState));
 
   useEffect(() => {
+    const activeEl = youtubeVideoId ? (preloadMapRef.current.get(youtubeVideoId) ?? null) : null;
+    localIframeRef.current = activeEl;
+    if (ytIframeRef) ytIframeRef.current = activeEl;
     setYtActiveVisual(false);
     ytStateRef.current = -1;
     ytTimeRef.current = 0;
     ytDurationRef.current = 0;
     lastSeekAtRef.current = 0;
     loadedAtRef.current = performance.now();
-  }, [youtubeVideoId]);
+  }, [youtubeVideoId, ytIframeRef]);
 
   useEffect(() => {
     if (!isPlaying) setYtActiveVisual(false);
@@ -273,61 +287,104 @@ function StageYouTubeCurtains({
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
       if (typeof ev.data !== 'string') return;
+      let parsed: { event?: string; info?: { duration?: number; playerState?: number; currentTime?: number } };
       try {
-        const parsed = JSON.parse(ev.data);
-        if (parsed?.event === 'infoDelivery' && parsed.info) {
-          if (typeof parsed.info.duration === 'number' && parsed.info.duration > 1) {
-            ytDurationRef.current = parsed.info.duration;
-          }
-          if (typeof parsed.info.playerState === 'number') {
-            const st = parsed.info.playerState as number;
-            ytStateRef.current = st;
-            if (st === 1) {
-              setYtActiveVisual(true);
-              if (!audienceMuted) {
-                onAutoplayBlocked?.(false);
-              }
-            } else if (st === 0) {
-              setYtActiveVisual(false);
-              // Clean synced replay when track reaches the end without fighting drift-correction seek
-              if (isPlaying && localIframeRef.current) {
-                const raw = realtimeStore.getSyncedPlaybackSec(realtimeStore.room?.concert ?? concert);
-                const dur = ytDurationRef.current;
-                const mod = dur > 1 ? raw % dur : 0;
-                const loopTarget = dur > 1 && dur - mod >= 3 ? mod : 0;
-                ytTimeRef.current = loopTarget;
-                lastSeekAtRef.current = performance.now();
-                sendYtCmd(localIframeRef.current, 'seekTo', [loopTarget, true]);
-                sendYtCmd(localIframeRef.current, 'playVideo');
-              }
-            } else if (st === 2 || st === 5 || st === -1) {
-              setYtActiveVisual(false);
-            }
-          }
-          if (typeof parsed.info.currentTime === 'number') {
-            ytTimeRef.current = parsed.info.currentTime;
+        parsed = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (parsed?.event !== 'infoDelivery' || !parsed.info) return;
+
+      const activeIframe = localIframeRef.current;
+      // Background preloaded iframes: once they buffer & hit playing (1), park paused cleanly at 0s
+      if (!activeIframe?.contentWindow || ev.source !== activeIframe.contentWindow) {
+        for (const [vid, bgIframe] of preloadMapRef.current.entries()) {
+          if (vid !== youtubeVideoId && bgIframe.contentWindow === ev.source && parsed.info.playerState === 1) {
+            sendYtCmd(bgIframe, 'pauseVideo');
+            sendYtCmd(bgIframe, 'seekTo', [0, true]);
           }
         }
-      } catch {
-        // Ignore non-JSON postMessages
+        return;
+      }
+
+      if (typeof parsed.info.duration === 'number' && parsed.info.duration > 1) {
+        ytDurationRef.current = parsed.info.duration;
+      }
+      if (typeof (parsed.info as { muted?: boolean }).muted === 'boolean') {
+        ytMutedRef.current = Boolean((parsed.info as { muted?: boolean }).muted);
+      }
+      if (typeof parsed.info.playerState === 'number') {
+        const st = parsed.info.playerState;
+        ytStateRef.current = st;
+        if (st === 1) {
+          setYtActiveVisual(true);
+          if (!audienceMuted && !ytMutedRef.current) {
+            onAutoplayBlocked?.(false);
+          }
+        } else if (st === 0) {
+          setYtActiveVisual(false);
+          if (isPlaying && localIframeRef.current) {
+            const raw = realtimeStore.getSyncedPlaybackSec(realtimeStore.room?.concert ?? concert);
+            const dur = ytDurationRef.current;
+            const mod = dur > 1 ? raw % dur : 0;
+            const loopTarget = dur > 1 && dur - mod >= 3 ? mod : 0;
+            ytTimeRef.current = loopTarget;
+            lastSeekAtRef.current = performance.now();
+            sendYtCmd(localIframeRef.current, 'seekTo', [loopTarget, true]);
+            sendYtCmd(localIframeRef.current, 'playVideo');
+          }
+        } else if (st === 2 || st === 5 || st === -1) {
+          setYtActiveVisual(false);
+        }
+      }
+      if (typeof parsed.info.currentTime === 'number') {
+        ytTimeRef.current = parsed.info.currentTime;
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [audienceMuted, isPlaying, onAutoplayBlocked]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audienceMuted, isPlaying, youtubeVideoId, onAutoplayBlocked]);
 
-  // Sync play/pause/seek only when playback epoch, track, or playing status actually changes
+  // Sync YouTube music volume & mute from Karaoke mixer
+  useEffect(() => {
+    const iframe = localIframeRef.current;
+    if (!iframe || !youtubeVideoId || !screenVisible) return;
+    if (audienceMuted || musicMuted || musicVolume === 0) {
+      sendYtCmd(iframe, 'mute');
+    } else {
+      sendYtCmd(iframe, 'unMute');
+      sendYtCmd(iframe, 'setVolume', [musicVolume]);
+    }
+  }, [musicVolume, musicMuted, audienceMuted, youtubeVideoId, screenVisible]);
+
+  // Sync play/pause/seek when active track, epoch, or playing state changes
   useEffect(() => {
     const iframe = localIframeRef.current;
     if (!iframe || !youtubeVideoId || !screenVisible) return;
     const latestConcert = realtimeStore.room?.concert ?? concert;
     const targetSec = getLoopAwareSyncSec(latestConcert);
+    if (audienceMuted || musicMuted || musicVolume === 0) {
+      sendYtCmd(iframe, 'mute');
+    } else {
+      sendYtCmd(iframe, 'unMute');
+      sendYtCmd(iframe, 'setVolume', [musicVolume]);
+    }
     if (isPlaying) {
-      lastSeekAtRef.current = performance.now();
-      sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+      if (Math.abs(ytTimeRef.current - targetSec) > 1.2) {
+        lastSeekAtRef.current = performance.now();
+        sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+      }
       sendYtCmd(iframe, 'playVideo');
     } else {
       sendYtCmd(iframe, 'pauseVideo');
+    }
+    // Also ensure any other preloaded background tracks stay paused & muted
+    for (const [vid, bgIframe] of preloadMapRef.current.entries()) {
+      if (vid !== youtubeVideoId) {
+        sendYtCmd(bgIframe, 'mute');
+        sendYtCmd(bgIframe, 'pauseVideo');
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [youtubeVideoId, isPlaying, concert.trackStartedAtServerMs, concert.currentSetlistIndex, screenVisible]);
@@ -356,18 +413,27 @@ function StageYouTubeCurtains({
       }
 
       const st = ytStateRef.current;
-      // Ignore playing (1) and buffering (3) so slow connections never trigger false mute banners
-      if (!audienceMuted && st !== 1 && st !== 3) {
-        const hasActivation =
-          (navigator as unknown as { userActivation?: { hasBeenActive?: boolean } }).userActivation?.hasBeenActive ?? false;
-        if (hasActivation) {
-          sendYtCmd(iframe, 'unMute');
-          sendYtCmd(iframe, 'playVideo');
-        } else if (now - loadedAtRef.current > 2600) {
-          // Only mute & prompt when untouched tab genuinely blocks unmuted autoplay
-          sendYtCmd(iframe, 'mute');
-          sendYtCmd(iframe, 'playVideo');
-          onAutoplayBlocked?.(true);
+      const hasActivation =
+        (navigator as unknown as { userActivation?: { hasBeenActive?: boolean } }).userActivation?.hasBeenActive ?? false;
+
+      if (!audienceMuted && !musicMuted && musicVolume > 0) {
+        if (st === 1 && ytMutedRef.current) {
+          if (hasActivation) {
+            sendYtCmd(iframe, 'unMute');
+            sendYtCmd(iframe, 'setVolume', [musicVolume]);
+          } else if (now - loadedAtRef.current > 2600) {
+            onAutoplayBlocked?.(true);
+          }
+        } else if (st !== 1 && st !== 3) {
+          if (hasActivation) {
+            sendYtCmd(iframe, 'unMute');
+            sendYtCmd(iframe, 'setVolume', [musicVolume]);
+            sendYtCmd(iframe, 'playVideo');
+          } else if (now - loadedAtRef.current > 2600) {
+            sendYtCmd(iframe, 'mute');
+            sendYtCmd(iframe, 'playVideo');
+            onAutoplayBlocked?.(true);
+          }
         }
       }
     }, 1800);
@@ -418,30 +484,72 @@ function StageYouTubeCurtains({
           style={{ pointerEvents: 'none' }}
         >
           <div className="pointer-events-none relative h-[360px] w-[640px] overflow-hidden rounded bg-black shadow-2xl">
-            <iframe
-              ref={(el) => {
-                localIframeRef.current = el;
-                if (ytIframeRef) ytIframeRef.current = el;
-              }}
-              onLoad={() => {
-                const iframe = localIframeRef.current;
-                if (!iframe?.contentWindow) return;
-                iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening' }), '*');
-                window.setTimeout(() => {
-                  iframe.contentWindow?.postMessage(JSON.stringify({ event: 'listening' }), '*');
-                }, 400);
-                lastSeekAtRef.current = performance.now();
-                if (audienceMuted) sendYtCmd(iframe, 'mute');
-                if (isPlaying) sendYtCmd(iframe, 'playVideo');
-              }}
-              key={youtubeVideoId}
-              title="Stage Video Screen"
-              src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&start=${initialStartSec.current}&mute=${audienceMuted ? 1 : 0}`}
-              allow="autoplay; encrypted-media"
-              className={`pointer-events-none h-[600px] w-[640px] -translate-y-[120px] border-0 transition-opacity duration-500 ${
-                ytActiveVisual && isPlaying ? 'opacity-100' : 'opacity-0'
-              }`}
-            />
+            {preloadedVideoIds.map((vid) => {
+              const isActive = vid === youtubeVideoId;
+              return (
+                <iframe
+                  key={vid}
+                  ref={(el) => {
+                    if (el) {
+                      preloadMapRef.current.set(vid, el);
+                    } else {
+                      preloadMapRef.current.delete(vid);
+                    }
+                    if (isActive) {
+                      localIframeRef.current = el;
+                      if (ytIframeRef) ytIframeRef.current = el;
+                    }
+                  }}
+                  onLoad={() => {
+                    const iframe = preloadMapRef.current.get(vid);
+                    if (!iframe?.contentWindow) return;
+                    iframe.contentWindow.postMessage(JSON.stringify({ event: 'listening' }), '*');
+                    window.setTimeout(() => {
+                      iframe.contentWindow?.postMessage(JSON.stringify({ event: 'listening' }), '*');
+                    }, 400);
+                    if (isActive) {
+                      const syncSec = getLoopAwareSyncSec(realtimeStore.room?.concert ?? concert);
+                      lastSeekAtRef.current = performance.now();
+                      if (syncSec > 1) sendYtCmd(iframe, 'seekTo', [syncSec, true]);
+                      if (audienceMuted || musicMuted || musicVolume === 0) {
+                        sendYtCmd(iframe, 'mute');
+                      } else {
+                        sendYtCmd(iframe, 'unMute');
+                        sendYtCmd(iframe, 'setVolume', [musicVolume]);
+                      }
+                      if (isPlaying) {
+                        sendYtCmd(iframe, 'playVideo');
+                      } else {
+                        sendYtCmd(iframe, 'pauseVideo');
+                      }
+                    } else {
+                      // Background preload: start muted briefly so YouTube buffers frames/audio, then parked at 0s
+                      sendYtCmd(iframe, 'mute');
+                      sendYtCmd(iframe, 'playVideo');
+                    }
+                  }}
+                  title={isActive ? 'Stage Video Screen' : `Preloaded Stage Track (${vid})`}
+                  src={`https://www.youtube.com/embed/${vid}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&mute=1`}
+                  allow="autoplay; encrypted-media"
+                  className={`pointer-events-none absolute left-0 top-0 h-[600px] w-[640px] -translate-y-[120px] border-0 transition-opacity duration-500 ${
+                    isActive
+                      ? ytActiveVisual && isPlaying
+                        ? 'z-10 opacity-100'
+                        : isPausedState
+                          ? 'z-10 opacity-55'
+                          : 'z-10 opacity-0'
+                      : 'z-0 opacity-0'
+                  }`}
+                />
+              );
+            })}
+            {isPausedState && (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35">
+                <div className="rounded-full border border-amber-400/50 bg-stone-950/85 px-4 py-1.5 text-xs font-bold tracking-wider text-amber-300 shadow-xl">
+                  ⏸ TẠM DỪNG NHẠC
+                </div>
+              </div>
+            )}
           </div>
         </Html>
       )}
@@ -829,6 +937,8 @@ export function AuditoriumScene({
   youtubeVideoId,
   isYouTubePlaying = false,
   audienceMuted = false,
+  musicVolume = 80,
+  musicMuted = false,
   ytIframeRef,
   onAutoplayBlocked,
   onSelectSeat,
@@ -843,6 +953,8 @@ export function AuditoriumScene({
   youtubeVideoId?: string;
   isYouTubePlaying?: boolean;
   audienceMuted?: boolean;
+  musicVolume?: number;
+  musicMuted?: boolean;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
   onSelectSeat: (seatId: string) => void;
@@ -891,6 +1003,8 @@ export function AuditoriumScene({
         youtubeVideoId={youtubeVideoId}
         isPlaying={isYouTubePlaying}
         audienceMuted={audienceMuted}
+        musicVolume={musicVolume}
+        musicMuted={musicMuted}
         ytIframeRef={ytIframeRef}
         onAutoplayBlocked={onAutoplayBlocked}
       />

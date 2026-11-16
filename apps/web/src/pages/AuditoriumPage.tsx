@@ -29,6 +29,7 @@ import {
   WifiOff,
   Youtube,
   Loader2,
+  Disc3,
 } from 'lucide-react';
 import {
   extractStandardYouTubeVideoId,
@@ -39,6 +40,8 @@ import {
   type RoomDTO,
 } from '@vmw/contracts';
 import { AuditoriumScene, type CameraMode } from '../components/auditorium/AuditoriumScene';
+import { DualDeckMixer } from '../components/auditorium/DualDeckMixer';
+import { MicActivityDot, PerformerMicPanel } from '../components/auditorium/PerformerMicPanel';
 import { realtimeStore } from '../realtime/realtimeStore';
 import { useAuth } from '../state/authStore';
 import { apiClient } from '../api/client';
@@ -107,6 +110,16 @@ export function AuditoriumPage() {
   const [talkbackActive, setTalkbackActive] = useState(false); // TBD-08
   const [webrtcStats, setWebrtcStats] = useState<WebRtcDiagnostics | null>(null);
   const [midiDockOpen, setMidiDockOpen] = useState(false);
+  const [djMixerOpen, setDjMixerOpen] = useState(false);
+  const [deckAVolume, setDeckAVolume] = useState(100);
+  const [queuedDeckBIdx, setQueuedDeckBIdx] = useState(1);
+  const [micPanelOpen, setMicPanelOpen] = useState(
+    () => effectiveRole === 'ARTIST' || effectiveRole === 'HOST' || effectiveRole === 'ADMIN'
+  );
+  const [musicVolume, setMusicVolume] = useState(() => audioEngine.getCaptureSettings().musicVolume);
+  const [musicMuted, setMusicMuted] = useState(() => audioEngine.getCaptureSettings().musicMuted);
+  const [emoteVolume, setEmoteVolume] = useState(() => audioEngine.getCaptureSettings().emoteVolume);
+  const [emoteMuted, setEmoteMuted] = useState(() => audioEngine.getCaptureSettings().emoteMuted);
   const [instrument] = useState<InstrumentType>(navState?.performerInstrument ?? 'PIANO');
 
   // Setlist & Invite state
@@ -241,6 +254,20 @@ export function AuditoriumPage() {
   }, [roomId, effectiveUserId, effectiveName, effectiveRole, effectiveAvatar]);
 
   useEffect(() => {
+    return audioEngine.subscribeMusicVolume((vol, muted) => {
+      setMusicVolume(vol);
+      setMusicMuted(muted);
+    });
+  }, []);
+
+  useEffect(() => {
+    return audioEngine.subscribeEmoteVolume((vol, muted) => {
+      setEmoteVolume(vol);
+      setEmoteMuted(muted);
+    });
+  }, []);
+
+  useEffect(() => {
     if (!systemNotice) return;
     const timer = window.setTimeout(() => {
       realtimeStore.systemNotice = null;
@@ -349,7 +376,23 @@ export function AuditoriumPage() {
         audioEngine.stopCapture();
         setIsBroadcasting(false);
       } else {
-        const stream = audioEngine.getStream() ?? (await audioEngine.startCapture(undefined, false));
+        const s = audioEngine.getCaptureSettings();
+        const stream =
+          audioEngine.getStream() ??
+          (await audioEngine.startCapture(s.deviceId || undefined, s.monitorEnabled, {
+            echoCancellation: s.echoCancellation,
+            noiseSuppression: s.noiseSuppression,
+            autoGainControl: false,
+            inputGain: s.inputGain,
+            monitorVolume: s.monitorVolume,
+            stageEcho: s.stageEchoEnabled,
+            stageEchoMix: s.stageEchoMix,
+            stageEchoDelayMs: s.stageEchoDelayMs,
+            stageEchoFeedback: s.stageEchoFeedback,
+            reverbEnabled: s.reverbEnabled,
+            reverbMix: s.reverbMix,
+            reverbRoomSec: s.reverbRoomSec,
+          }));
         await webrtcAudio.startBroadcast(stream);
         setIsBroadcasting(true);
       }
@@ -516,6 +559,7 @@ export function AuditoriumPage() {
     try {
       setAutoplayBlocked(false);
       setAudienceMuted(false);
+      audioEngine.setRoomOutputMuted(false);
       webrtcAudio.setAudienceMuted(false);
       await webrtcAudio.unlockPlayback();
       if (ytIframeRef.current?.contentWindow && room) {
@@ -541,6 +585,7 @@ export function AuditoriumPage() {
   const currentSong = room?.concert.setlist[room.concert.currentSetlistIndex];
   const participants = Array.from(realtimeStore.avatars.values());
   const localSeated = Boolean(realtimeStore.avatars.get(effectiveUserId)?.seatId);
+  const effectiveMusicVolume = Math.round((musicVolume * deckAVolume) / 100);
 
   return (
     <div className="relative flex h-[calc(100vh-57px)] w-full overflow-hidden bg-stone-950">
@@ -560,6 +605,8 @@ export function AuditoriumPage() {
                 (room.concert.trackPlaying ?? (room.concert.state !== 'PAUSED' && room.concert.state !== 'COMPLETED'))
             )}
             audienceMuted={audienceMuted}
+            musicVolume={effectiveMusicVolume}
+            musicMuted={musicMuted}
             ytIframeRef={ytIframeRef}
             onAutoplayBlocked={setAutoplayBlocked}
             onSelectSeat={(seatId) => realtimeStore.send({ type: 'OCCUPY_SEAT', seatId })}
@@ -687,6 +734,7 @@ export function AuditoriumPage() {
                 return;
               }
               setAudienceMuted(true);
+              audioEngine.setRoomOutputMuted(true);
               webrtcAudio.setAudienceMuted(true);
               ytIframeRef.current?.contentWindow?.postMessage(
                 JSON.stringify({ event: 'command', func: 'mute', args: '' }),
@@ -736,6 +784,32 @@ export function AuditoriumPage() {
           )}
         </div>
 
+        {/* Performer Mic & Self-Monitor / Stage Echo Control Panel */}
+        {isPerformerOrHost && (
+          <PerformerMicPanel
+            open={micPanelOpen}
+            onClose={() => setMicPanelOpen(false)}
+            isBroadcasting={isBroadcasting}
+            micPending={micPending}
+            onToggleBroadcast={handleToggleBroadcast}
+            onNotice={setSystemNotice}
+          />
+        )}
+
+        {/* Dual-Deck Transition Mixer (Deck A: Now Playing vs Deck B: Queued/Fade) */}
+        {isPerformerOrHost && room && (
+          <DualDeckMixer
+            open={djMixerOpen}
+            onClose={() => setDjMixerOpen(false)}
+            setlist={room.concert.setlist}
+            currentIndex={room.concert.currentSetlistIndex}
+            queuedIndex={queuedDeckBIdx}
+            onSelectQueuedIndex={setQueuedDeckBIdx}
+            deckAVolume={deckAVolume}
+            onDeckAVolumeChange={setDeckAVolume}
+          />
+        )}
+
         {/* Floating Performer MIDI Keys Dock */}
         {isPerformerOrHost && midiDockOpen && (
           <div className="absolute bottom-20 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-amber-500/30 bg-stone-950/90 px-4 py-2.5 shadow-2xl backdrop-blur-md">
@@ -754,17 +828,29 @@ export function AuditoriumPage() {
           </div>
         )}
 
-        {/* Bottom-Center Audience Reactions & Performer Stage Controls */}
-        <div className="absolute bottom-4 left-1/2 z-10 flex max-w-[95vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-stone-800/90 bg-stone-950/90 px-3.5 py-2 shadow-2xl">
+        {/* Separate Audience Reactions & Seat Dock (right side for Performers, bottom-center for Audience) */}
+        <div
+          className={
+            isPerformerOrHost
+              ? 'absolute right-4 top-1/2 z-10 flex -translate-y-1/2 flex-col gap-1.5 rounded-2xl border border-stone-800/90 bg-stone-950/90 p-2 shadow-2xl'
+              : 'absolute bottom-4 left-1/2 z-10 flex max-w-[95vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-stone-800/90 bg-stone-950/90 px-3.5 py-2 shadow-2xl'
+          }
+        >
+          {isPerformerOrHost && (
+            <span className="pb-0.5 text-center text-[9px] font-bold uppercase tracking-wider text-stone-500">Emote</span>
+          )}
           {(['CLAP', 'CHEER', 'WAVE', 'DANCE'] as const).map((r) => {
             const isLoading = pendingReaction === r;
             const otherLocked = Boolean(pendingReaction) && !isLoading;
+            const emoji = r === 'CLAP' ? '👏' : r === 'CHEER' ? '🙌' : r === 'WAVE' ? '👋' : '💃';
             return (
               <button
                 key={r}
                 disabled={Boolean(pendingReaction)}
                 onClick={() => handleSendReaction(r)}
-                className={`flex items-center gap-1 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                  isPerformerOrHost ? 'justify-start' : 'justify-center'
+                } ${
                   isLoading
                     ? 'bg-amber-500/25 text-amber-200 ring-2 ring-amber-400/80'
                     : otherLocked
@@ -772,7 +858,14 @@ export function AuditoriumPage() {
                       : 'bg-stone-800/90 text-stone-200 hover:bg-amber-500 hover:text-stone-950'
                 }`}
               >
-                {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-300" /> : <Sparkles className="h-3 w-3" />} {r}
+                {isLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-300" />
+                ) : isPerformerOrHost ? (
+                  <span>{emoji}</span>
+                ) : (
+                  <Sparkles className="h-3 w-3" />
+                )}
+                <span>{r}</span>
               </button>
             );
           })}
@@ -782,7 +875,9 @@ export function AuditoriumPage() {
             disabled={Boolean(pendingReaction)}
             onClick={() => handleSendReaction('FLOWER')}
             title="Send Free Virtual Flower (TBD-16)"
-            className={`flex items-center gap-1 rounded-xl border border-pink-500/30 px-3 py-1.5 text-xs font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+            className={`flex items-center gap-1.5 rounded-xl border border-pink-500/30 px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+              isPerformerOrHost ? 'justify-start' : 'justify-center'
+            } ${
               pendingReaction === 'FLOWER'
                 ? 'bg-pink-500/30 text-pink-100 ring-2 ring-pink-400/80'
                 : pendingReaction
@@ -797,139 +892,246 @@ export function AuditoriumPage() {
             <button
               disabled={pendingStand}
               onClick={handleStandUp}
-              className={`flex items-center gap-1 rounded-xl border border-stone-700 bg-stone-900 px-2.5 py-1.5 text-xs text-stone-300 transition-all duration-100 hover:bg-stone-800 active:scale-95 disabled:cursor-not-allowed ${
-                pendingStand ? 'ring-2 ring-amber-400/80 text-amber-200' : ''
-              }`}
+              className={`flex items-center gap-1.5 rounded-xl border border-stone-700 bg-stone-900 px-2.5 py-1.5 text-[11px] text-stone-300 transition-all duration-100 hover:bg-stone-800 active:scale-95 disabled:cursor-not-allowed ${
+                isPerformerOrHost ? 'mt-0.5 justify-start border-t border-stone-800' : 'justify-center'
+              } ${pendingStand ? 'ring-2 ring-amber-400/80 text-amber-200' : ''}`}
             >
               {pendingStand ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
               ) : (
                 <Armchair className="h-3 w-3 text-amber-400" />
-              )}{' '}
-              Stand
+              )}
+              <span>Stand</span>
             </button>
           )}
 
-          {isPerformerOrHost && (
-            <div className="ml-1 flex flex-wrap items-center gap-1.5 border-l border-stone-700 pl-2.5">
-              <button
-                disabled={micPending}
-                onClick={() => void handleToggleBroadcast()}
-                className={`flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  micPending ? 'ring-2 ring-white/80' : ''
-                } ${isBroadcasting ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
-              >
-                {micPending ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : isBroadcasting ? (
-                  <Mic className="h-3.5 w-3.5" />
+          {/* Emote Sound Effects (SFX) Volume Control */}
+          <div
+            className={
+              isPerformerOrHost
+                ? 'mt-0.5 flex flex-col gap-1 border-t border-stone-800/80 px-1 pt-1.5'
+                : 'ml-0.5 flex items-center gap-1.5 border-l border-stone-800/80 pl-2'
+            }
+          >
+            <button
+              type="button"
+              onClick={() => {
+                const nextMute = !emoteMuted;
+                setEmoteMuted(nextMute);
+                audioEngine.setEmoteVolume(emoteVolume, nextMute);
+              }}
+              title={emoteMuted ? 'Bật âm thanh Emote' : 'Tắt tiếng Emote'}
+              className="flex items-center justify-between gap-1 text-[10px] font-semibold text-stone-300 hover:text-amber-300"
+            >
+              <span className="inline-flex items-center gap-1">
+                {emoteMuted || emoteVolume === 0 ? (
+                  <VolumeX className="h-3 w-3 text-red-400" />
                 ) : (
-                  <MicOff className="h-3.5 w-3.5" />
+                  <Volume2 className="h-3 w-3 text-amber-400" />
                 )}
-                {micPending ? (isBroadcasting ? 'Stopping...' : 'Starting...') : isBroadcasting ? 'Mic Live' : 'Go Mic'}
-              </button>
-
-              <button
-                disabled={talkbackPending}
-                onClick={() => void handleToggleTalkback()}
-                title="Private Performer Talkback (TBD-08)"
-                className={`flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  talkbackPending ? 'ring-2 ring-sky-300/80' : ''
-                } ${talkbackActive ? 'bg-sky-600 text-white' : 'bg-stone-800 text-stone-300 hover:bg-stone-700'}`}
-              >
-                {talkbackPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {talkbackPending ? 'Linking...' : talkbackActive ? 'Talkback On' : 'Talkback'}
-              </button>
-
-              <button
-                onClick={() => setMidiDockOpen((v) => !v)}
-                className={`flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs font-semibold transition-all duration-100 active:scale-95 ${
-                  midiDockOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
-                }`}
-              >
-                <Piano className="h-3.5 w-3.5" /> MIDI
-              </button>
-
-              <button
-                disabled={Boolean(pendingTransport)}
-                onClick={() => handleConcertControl('GO_LIVE')}
-                className={`inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-xs font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  pendingTransport === 'GO_LIVE'
-                    ? 'ring-2 ring-emerald-200/85'
-                    : pendingTransport
-                      ? 'opacity-50'
-                      : 'hover:bg-emerald-500'
-                }`}
-              >
-                {pendingTransport === 'GO_LIVE' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3 w-3" />} Live
-              </button>
-              <button
-                disabled={Boolean(pendingTransport)}
-                onClick={() => handleConcertControl('PAUSE')}
-                title="Pause Concert"
-                className={`inline-flex items-center justify-center rounded-xl bg-stone-800 px-2.5 py-1.5 text-xs text-stone-200 transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  pendingTransport === 'PAUSE'
-                    ? 'ring-2 ring-amber-300/80 text-amber-200'
-                    : pendingTransport
-                      ? 'opacity-50'
-                      : 'hover:bg-stone-700'
-                }`}
-              >
-                {pendingTransport === 'PAUSE' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pause className="h-3 w-3" />}
-              </button>
-              <button
-                disabled={Boolean(pendingTransport)}
-                onClick={() => handleConcertControl('END_SONG')}
-                className={`inline-flex items-center gap-1 rounded-xl bg-amber-600 px-2.5 py-1.5 text-xs font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  pendingTransport === 'END_SONG'
-                    ? 'ring-2 ring-amber-200/85'
-                    : pendingTransport
-                      ? 'opacity-50'
-                      : 'hover:bg-amber-500'
-                }`}
-              >
-                {pendingTransport === 'END_SONG' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                Applause
-              </button>
-              <button
-                disabled={Boolean(pendingTransport)}
-                onClick={() => handleConcertControl('NEXT_SONG')}
-                className={`inline-flex items-center gap-1 rounded-xl bg-stone-800 px-2.5 py-1.5 text-xs text-stone-200 transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  pendingTransport === 'NEXT_SONG'
-                    ? 'ring-2 ring-amber-300/80 text-amber-200'
-                    : pendingTransport
-                      ? 'opacity-50'
-                      : 'hover:bg-stone-700'
-                }`}
-              >
-                {pendingTransport === 'NEXT_SONG' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <SkipForward className="h-3 w-3" />
-                )}{' '}
-                Next
-              </button>
-              <button
-                disabled={Boolean(pendingTransport)}
-                onClick={() => void handleSwitchMode()}
-                className={`inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                  pendingTransport === 'TOGGLE_MODE'
-                    ? 'ring-2 ring-indigo-200/85'
-                    : pendingTransport
-                      ? 'opacity-50'
-                      : 'hover:bg-indigo-500'
-                }`}
-              >
-                {pendingTransport === 'TOGGLE_MODE' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Music2 className="h-3 w-3" />
-                )}{' '}
-                Live/Rec
-              </button>
-            </div>
-          )}
+                <span>SFX</span>
+              </span>
+              {isPerformerOrHost && (
+                <span className="font-mono text-[9px] text-amber-300">
+                  {emoteMuted || emoteVolume === 0 ? 'OFF' : `${emoteVolume}%`}
+                </span>
+              )}
+            </button>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={emoteVolume}
+              title={`Âm lượng Emote: ${emoteMuted || emoteVolume === 0 ? 'Muted' : `${emoteVolume}%`}`}
+              onChange={(e) => {
+                const vol = Number(e.target.value);
+                setEmoteVolume(vol);
+                if (vol > 0 && emoteMuted) setEmoteMuted(false);
+                audioEngine.setEmoteVolume(vol, vol === 0);
+              }}
+              className={`${isPerformerOrHost ? 'w-20' : 'w-16'} cursor-pointer accent-amber-400`}
+            />
+            {!isPerformerOrHost && (
+              <span className="w-7 text-right font-mono text-[10px] text-amber-300">
+                {emoteMuted || emoteVolume === 0 ? 'OFF' : `${emoteVolume}%`}
+              </span>
+            )}
+          </div>
         </div>
+
+        {/* Dedicated Bottom-Center Performer & Stage Controls Bar (1 clean row, separated from Emotes) */}
+        {isPerformerOrHost && (
+          <div className="absolute bottom-4 left-1/2 z-10 flex max-w-[94vw] -translate-x-1/2 items-center gap-1.5 overflow-x-auto whitespace-nowrap rounded-2xl border border-stone-800/90 bg-stone-950/90 px-3 py-2 shadow-2xl">
+            <button
+              disabled={micPending}
+              onClick={() => void handleToggleBroadcast()}
+              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                micPending ? 'ring-2 ring-white/80' : ''
+              } ${isBroadcasting ? 'bg-red-600 hover:bg-red-500' : 'bg-emerald-600 hover:bg-emerald-500'}`}
+            >
+              {micPending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : isBroadcasting ? (
+                <Mic className="h-3.5 w-3.5" />
+              ) : (
+                <MicOff className="h-3.5 w-3.5" />
+              )}
+              {micPending ? (isBroadcasting ? 'Stopping...' : 'Starting...') : isBroadcasting ? 'Mic Live' : 'Go Mic'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setMicPanelOpen((v) => !v)}
+              title="Mở bảng điều khiển Karaoke, Mic, Self-Monitor & Echo"
+              className={`flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                micPanelOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+              }`}
+            >
+              <Sliders className="h-3.5 w-3.5" /> Mic Panel
+              <MicActivityDot />
+            </button>
+
+            <button
+              disabled={talkbackPending}
+              onClick={() => void handleToggleTalkback()}
+              title="Private Performer Talkback (TBD-08)"
+              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                talkbackPending ? 'ring-2 ring-sky-300/80' : ''
+              } ${talkbackActive ? 'bg-sky-600 text-white' : 'bg-stone-800 text-stone-300 hover:bg-stone-700'}`}
+            >
+              {talkbackPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              {talkbackPending ? 'Linking...' : talkbackActive ? 'Talkback On' : 'Talkback'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDjMixerOpen((v) => !v);
+                setMidiDockOpen(false);
+              }}
+              title="Mở bảng chuyển bài mượt Dual-Deck Mixer (Deck A -> Deck B)"
+              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                djMixerOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+              }`}
+            >
+              <Disc3 className="h-3.5 w-3.5" /> DJ Mix
+            </button>
+
+            <button
+              onClick={() => {
+                setMidiDockOpen((v) => !v);
+                setDjMixerOpen(false);
+              }}
+              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                midiDockOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+              }`}
+            >
+              <Piano className="h-3.5 w-3.5" /> MIDI
+            </button>
+
+            <span className="mx-0.5 h-5 w-px shrink-0 bg-stone-700/80" />
+
+            <button
+              disabled={Boolean(pendingTransport)}
+              onClick={() => handleConcertControl('GO_LIVE')}
+              className={`inline-flex shrink-0 items-center gap-1 rounded-xl bg-emerald-600 px-2.5 py-1.5 text-[11px] font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                pendingTransport === 'GO_LIVE'
+                  ? 'ring-2 ring-emerald-200/85'
+                  : pendingTransport
+                    ? 'opacity-50'
+                    : 'hover:bg-emerald-500'
+              }`}
+            >
+              {pendingTransport === 'GO_LIVE' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3 w-3" />}{' '}
+              {room?.concert.state === 'PAUSED' || room?.concert.state === 'INTERMISSION' ? 'Resume' : 'Live'}
+            </button>
+
+            <button
+              disabled={Boolean(pendingTransport)}
+              onClick={() =>
+                handleConcertControl(
+                  room?.concert.state === 'PAUSED' || room?.concert.state === 'INTERMISSION' ? 'GO_LIVE' : 'PAUSE'
+                )
+              }
+              title={
+                room?.concert.state === 'PAUSED' || room?.concert.state === 'INTERMISSION'
+                  ? 'Phát tiếp nhạc từ đoạn đang tạm dừng'
+                  : 'Tạm dừng nhạc (Pause)'
+              }
+              className={`inline-flex shrink-0 items-center justify-center rounded-xl px-2.5 py-1.5 text-[11px] transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                pendingTransport === 'PAUSE'
+                  ? 'bg-stone-800 ring-2 ring-amber-300/80 text-amber-200'
+                  : pendingTransport
+                    ? 'bg-stone-800 text-stone-200 opacity-50'
+                    : room?.concert.state === 'PAUSED' || room?.concert.state === 'INTERMISSION'
+                      ? 'bg-amber-500/25 text-amber-200 ring-1 ring-amber-400/60 hover:bg-amber-500/35'
+                      : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+              }`}
+            >
+              {pendingTransport === 'PAUSE' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : room?.concert.state === 'PAUSED' || room?.concert.state === 'INTERMISSION' ? (
+                <Play className="h-3 w-3" />
+              ) : (
+                <Pause className="h-3 w-3" />
+              )}
+            </button>
+
+            <button
+              disabled={Boolean(pendingTransport)}
+              onClick={() => handleConcertControl('END_SONG')}
+              className={`inline-flex shrink-0 items-center gap-1 rounded-xl bg-amber-600 px-2.5 py-1.5 text-[11px] font-bold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                pendingTransport === 'END_SONG'
+                  ? 'ring-2 ring-amber-200/85'
+                  : pendingTransport
+                    ? 'opacity-50'
+                    : 'hover:bg-amber-500'
+              }`}
+            >
+              {pendingTransport === 'END_SONG' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              Applause
+            </button>
+
+            <button
+              disabled={Boolean(pendingTransport)}
+              onClick={() => handleConcertControl('NEXT_SONG')}
+              className={`inline-flex shrink-0 items-center gap-1 rounded-xl bg-stone-800 px-2.5 py-1.5 text-[11px] text-stone-200 transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                pendingTransport === 'NEXT_SONG'
+                  ? 'ring-2 ring-amber-300/80 text-amber-200'
+                  : pendingTransport
+                    ? 'opacity-50'
+                    : 'hover:bg-stone-700'
+              }`}
+            >
+              {pendingTransport === 'NEXT_SONG' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <SkipForward className="h-3 w-3" />
+              )}{' '}
+              Next
+            </button>
+
+            <button
+              disabled={Boolean(pendingTransport)}
+              onClick={() => void handleSwitchMode()}
+              className={`inline-flex shrink-0 items-center gap-1 rounded-xl bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
+                pendingTransport === 'TOGGLE_MODE'
+                  ? 'ring-2 ring-indigo-200/85'
+                  : pendingTransport
+                    ? 'opacity-50'
+                    : 'hover:bg-indigo-500'
+              }`}
+            >
+              {pendingTransport === 'TOGGLE_MODE' ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Music2 className="h-3 w-3" />
+              )}{' '}
+              Live/Rec
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Collapsible Livestream Chat, Audience & Stage Control Panel */}
@@ -1094,12 +1296,28 @@ export function AuditoriumPage() {
 
               {/* Editable Setlist + YouTube Track Insertion (SM-08) */}
               <div className="border-t border-stone-800 pt-3">
-                <div className="mb-1.5 font-semibold text-stone-300">Setlist ({room.concert.setlist.length})</div>
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="font-semibold text-stone-300">Setlist ({room.concert.setlist.length})</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDjMixerOpen((v) => !v);
+                      setMidiDockOpen(false);
+                    }}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold transition ${
+                      djMixerOpen
+                        ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                        : 'border-stone-700 bg-stone-900 text-amber-300 hover:bg-stone-800'
+                    }`}
+                  >
+                    <Disc3 className="h-3 w-3" /> {djMixerOpen ? 'Ẩn Deck Mix' : 'Deck Mix'}
+                  </button>
+                </div>
                 <div className="space-y-1.5">
                   {room.concert.setlist.map((item, idx) => (
                     <div
                       key={item.id}
-                      className={`flex items-center justify-between rounded-lg border px-2.5 py-1.5 ${
+                      className={`flex items-center justify-between gap-1 rounded-lg border px-2.5 py-1.5 ${
                         idx === room.concert.currentSetlistIndex
                           ? 'border-amber-500/40 bg-amber-500/10 text-amber-100'
                           : 'border-stone-800 bg-stone-950 text-stone-300'
@@ -1109,7 +1327,7 @@ export function AuditoriumPage() {
                         type="button"
                         onClick={() => realtimeStore.send({ type: 'SELECT_SETLIST_ITEM', index: idx })}
                         title="Play this track now"
-                        className="min-w-0 flex-1 pr-2 text-left"
+                        className="min-w-0 flex-1 pr-1 text-left"
                       >
                         <div className="flex items-center gap-1 truncate font-medium">
                           {item.youtubeVideoId && <Youtube className="h-3 w-3 shrink-0 text-red-400" />}
@@ -1121,6 +1339,24 @@ export function AuditoriumPage() {
                           {item.mode} {idx === room.concert.currentSetlistIndex ? '• Now Playing' : '• Click to play'}
                         </div>
                       </button>
+                      {idx !== room.concert.currentSetlistIndex && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQueuedDeckBIdx(idx);
+                            setDjMixerOpen(true);
+                            setMidiDockOpen(false);
+                          }}
+                          title="Đưa vào Deck B để mix & chuyển bài mượt"
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold transition ${
+                            djMixerOpen && queuedDeckBIdx === idx
+                              ? 'bg-sky-500 text-stone-950'
+                              : 'bg-stone-800 text-sky-300 hover:bg-sky-500/20'
+                          }`}
+                        >
+                          Cue B
+                        </button>
+                      )}
                       {token && room.concert.setlist.length > 1 && (
                         <button
                           disabled={pendingRemoveSongId === item.id}

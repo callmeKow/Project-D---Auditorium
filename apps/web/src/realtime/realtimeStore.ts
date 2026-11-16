@@ -12,6 +12,7 @@ import type {
   RoomDTO,
   UserRole,
 } from '@vmw/contracts';
+import { audioEngine } from '../audio/audioEngine';
 
 /**
  * High-frequency 3D runtime & multiplayer store.
@@ -229,6 +230,9 @@ class RealtimeRoomStore {
               av.flowerBurstUntil = now + 2400;
             }
           }
+          if (msg.userId !== this.lastConnectParams?.userId) {
+            audioEngine.playReactionSound(msg.reaction);
+          }
           if (msg.reaction === 'FLOWER') {
             this.systemNotice = `🌸 ${msg.displayName ?? 'Audience'} sent a free Virtual Flower to the stage!`;
             this.emit();
@@ -241,6 +245,7 @@ class RealtimeRoomStore {
           for (const av of this.avatars.values()) {
             if (av.role !== 'ARTIST') av.animation = 'CLAP';
           }
+          audioEngine.playReactionSound('APPLAUSE');
           this.emit();
           break;
         }
@@ -316,16 +321,19 @@ class RealtimeRoomStore {
   }
 
   send(msg: RealtimeClientMessage) {
-    if (msg.type === 'REACTION_SEND' && this.lastConnectParams) {
-      const localAv = this.avatars.get(this.lastConnectParams.userId);
-      if (localAv) {
-        const now = performance.now();
-        localAv.lastReaction = msg.reaction;
-        localAv.reactionUntil = now + 2500;
-        localAv.animation = msg.reaction === 'FLOWER' ? 'CHEER' : msg.reaction;
-        if (msg.reaction === 'FLOWER') {
-          localAv.flowerBurstAt = now;
-          localAv.flowerBurstUntil = now + 2400;
+    if (msg.type === 'REACTION_SEND') {
+      audioEngine.playReactionSound(msg.reaction);
+      if (this.lastConnectParams) {
+        const localAv = this.avatars.get(this.lastConnectParams.userId);
+        if (localAv) {
+          const now = performance.now();
+          localAv.lastReaction = msg.reaction;
+          localAv.reactionUntil = now + 2500;
+          localAv.animation = msg.reaction === 'FLOWER' ? 'CHEER' : msg.reaction;
+          if (msg.reaction === 'FLOWER') {
+            localAv.flowerBurstAt = now;
+            localAv.flowerBurstUntil = now + 2400;
+          }
         }
       }
     }
