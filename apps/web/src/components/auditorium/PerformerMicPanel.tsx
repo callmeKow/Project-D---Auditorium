@@ -276,8 +276,8 @@ export function PerformerMicPanel({
   const busy = micPending || localPending;
 
   return (
-    <div className="pointer-events-auto absolute bottom-20 left-4 z-20 max-h-[82vh] w-[540px] max-w-[95vw] overflow-y-auto rounded-2xl border border-stone-700/90 bg-stone-950/95 p-3.5 text-xs text-stone-200 shadow-2xl">
-      <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+    <div className="pointer-events-auto absolute bottom-20 left-4 z-20 flex max-h-[82vh] w-[540px] max-w-[95vw] flex-col overflow-hidden rounded-2xl border border-stone-700/90 bg-stone-950/95 text-xs text-stone-200 shadow-2xl">
+      <div className="flex shrink-0 items-center justify-between border-b border-stone-800 bg-stone-950/95 px-3.5 py-2.5">
         <div className="flex items-center gap-2">
           <Sliders className="h-3.5 w-3.5 text-amber-400" />
           <span className="font-bold text-white">Karaoke &amp; Dual-Mic Mixer</span>
@@ -304,8 +304,9 @@ export function PerformerMicPanel({
         </button>
       </div>
 
+      <div className="flex-1 overflow-y-auto px-3.5 pb-3.5 pt-2.5">
       {/* Top Row: Room Preset + Solo Voice Quick Action */}
-      <div className="mt-2.5 flex items-center justify-between gap-2">
+      <div className="flex items-center justify-between gap-2">
         <span className="shrink-0 text-[11px] font-medium text-stone-400">Preset phòng hát</span>
         <select
           id="karaoke-preset-select"
@@ -1014,6 +1015,7 @@ export function PerformerMicPanel({
               </div>
             )}
           </div>
+      </div>
       </div>
     </div>
   );

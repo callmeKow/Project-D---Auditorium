@@ -236,6 +236,7 @@ export type RealtimeClientMessage =
   | { type: 'SET_PLAYBACK_MODE'; mode: 'REPEAT_ONE' | 'QUEUE_NEXT' }
   | { type: 'REORDER_SETLIST'; orderedIds: string[] }
   | { type: 'SET_LIGHTING_CUE'; preset: LightingPreset }
+  | { type: 'TRANSFER_HOST'; targetUserId: string }
   | { type: 'PING'; clientSentAt: number };
 
 /**

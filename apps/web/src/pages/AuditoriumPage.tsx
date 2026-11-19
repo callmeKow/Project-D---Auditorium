@@ -116,7 +116,6 @@ export function AuditoriumPage() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [remoteAudioCount, setRemoteAudioCount] = useState(0);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
-  const [talkbackActive, setTalkbackActive] = useState(false); // TBD-08
   const [webrtcStats, setWebrtcStats] = useState<WebRtcDiagnostics | null>(null);
   const [midiDockOpen, setMidiDockOpen] = useState(false);
   const [djMixerOpen, setDjMixerOpen] = useState(false);
@@ -168,7 +167,6 @@ export function AuditoriumPage() {
   const [pendingReaction, setPendingReaction] = useState<ReactionAction | null>(null);
   const [pendingStand, setPendingStand] = useState(false);
   const [micPending, setMicPending] = useState(false);
-  const [talkbackPending, setTalkbackPending] = useState(false);
   const [pendingTransport, setPendingTransport] = useState<TransportAction | null>(null);
   const [pendingAddSong, setPendingAddSong] = useState(false);
   const [pendingRemoveSongId, setPendingRemoveSongId] = useState<string | null>(null);
@@ -198,19 +196,25 @@ export function AuditoriumPage() {
     return id;
   };
 
-  const isHostOrAdmin =
-    Boolean(user?.roles.includes('HOST') || user?.roles.includes('ADMIN')) ||
-    effectiveRole === 'HOST' ||
-    effectiveRole === 'ADMIN';
+  const isPrivateRoom = Boolean(room?.isPrivate);
+  const isKaraoke = room?.venueStyle === 'KARAOKE';
+  const isPublicOpenRoom = Boolean(room && !room.isPrivate && (room.venueStyle === 'KARAOKE' || room.venueStyle === 'CHAMBER'));
+  const isSoleRoomHost = Boolean(room?.concert.hostUserId && room.concert.hostUserId === effectiveUserId);
+  const isAdmin = Boolean(user?.roles.includes('ADMIN')) || effectiveRole === 'ADMIN';
+  const isHostOrAdmin = isPrivateRoom
+    ? isSoleRoomHost || isAdmin
+    : !isPublicOpenRoom &&
+      (Boolean(user?.roles.includes('HOST') || user?.roles.includes('ADMIN')) ||
+        effectiveRole === 'HOST' ||
+        effectiveRole === 'ADMIN' ||
+        isSoleRoomHost);
   const isPerformerOrHost =
     effectiveRole === 'ARTIST' ||
     isHostOrAdmin ||
-    Boolean(room?.concert.hostUserId === effectiveUserId) ||
+    isSoleRoomHost ||
     Boolean(room?.concert.invitedPerformerIds.includes(effectiveUserId));
-  const isKaraoke = room?.venueStyle === 'KARAOKE';
-  const canUsePerformControls = isPerformerOrHost || Boolean(isKaraoke);
-  const canEditLighting = canUsePerformControls; // Host/Artist/Admin, or any participant in open Karaoke mode
-  const isAdmin = Boolean(user?.roles.includes('ADMIN')) || effectiveRole === 'ADMIN';
+  const canUsePerformControls = isPerformerOrHost || isPublicOpenRoom;
+  const canEditLighting = canUsePerformControls; // Host/Artist/Admin, or any participant in public Karaoke/Chamber mode
 
   useEffect(() => {
     if (!roomId) return;
@@ -397,25 +401,6 @@ export function AuditoriumPage() {
         setPendingTransport((cur) => (cur === action ? null : cur));
       }
     }, 1500);
-  };
-
-  const handleToggleTalkback = async () => {
-    if (talkbackPending) return;
-    setTalkbackPending(true);
-    try {
-      if (talkbackActive) {
-        webrtcAudio.stopBroadcast();
-        setTalkbackActive(false);
-      } else {
-        const stream = audioEngine.getStream() ?? (await audioEngine.startCapture(undefined, false));
-        await webrtcAudio.startPerformerTalkback(stream);
-        setTalkbackActive(true);
-      }
-    } catch (err) {
-      setSystemNotice((err as Error).message || 'Không thể bật Talkback mic.');
-    } finally {
-      setTalkbackPending(false);
-    }
   };
 
   const handlePerfSample = (fps: number, drawCalls: number) => {
@@ -1032,20 +1017,34 @@ export function AuditoriumPage() {
 
           <button
             onClick={() => {
-              const next = !audienceMuted;
-              if (!next) {
-                void handleUnlockSyncedAudio();
-                return;
+              const nextMuted = !audienceMuted;
+              setAudienceMuted(nextMuted);
+              audioEngine.setRoomOutputMuted(nextMuted);
+              webrtcAudio.setAudienceMuted(nextMuted);
+              if (!nextMuted) {
+                setAutoplayBlocked(false);
+                void webrtcAudio.unlockPlayback();
+                const cap = audioEngine.getCaptureSettings();
+                const targetVol = Math.round((cap.musicVolume * deckAVolume) / 100);
+                const shouldMuteMusic = cap.musicMuted || targetVol === 0;
+                ytIframeRef.current?.contentWindow?.postMessage(
+                  JSON.stringify({ event: 'command', func: shouldMuteMusic ? 'mute' : 'unMute', args: '' }),
+                  '*'
+                );
+                if (!shouldMuteMusic) {
+                  ytIframeRef.current?.contentWindow?.postMessage(
+                    JSON.stringify({ event: 'command', func: 'setVolume', args: [targetVol] }),
+                    '*'
+                  );
+                }
+              } else {
+                ytIframeRef.current?.contentWindow?.postMessage(
+                  JSON.stringify({ event: 'command', func: 'mute', args: '' }),
+                  '*'
+                );
               }
-              setAudienceMuted(true);
-              audioEngine.setRoomOutputMuted(true);
-              webrtcAudio.setAudienceMuted(true);
-              ytIframeRef.current?.contentWindow?.postMessage(
-                JSON.stringify({ event: 'command', func: 'mute', args: '' }),
-                '*'
-              );
             }}
-            title={audienceMuted ? 'Unmute Concert Audio' : 'Mute Concert Audio'}
+            title={audienceMuted ? 'Bật lại âm thanh phòng (chỉ riêng bạn)' : 'Tắt âm thanh phòng (chỉ riêng bạn)'}
             className="flex items-center gap-1.5 rounded-xl border border-stone-700/80 bg-stone-950/80 px-3 py-1.5 text-xs text-stone-200 backdrop-blur transition hover:bg-stone-800"
           >
             {audienceMuted ? <VolumeX className="h-3.5 w-3.5 text-red-400" /> : <Volume2 className="h-3.5 w-3.5 text-emerald-400" />}
@@ -1083,7 +1082,7 @@ export function AuditoriumPage() {
               onClick={() => setSidebarOpen(true)}
               className="flex items-center gap-1 rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-stone-950 shadow-md"
             >
-              <ChevronLeft className="h-3.5 w-3.5" /> Chat
+              <ChevronLeft className="h-3.5 w-3.5" /> More
             </button>
           )}
         </div>
@@ -1100,8 +1099,8 @@ export function AuditoriumPage() {
           />
         )}
 
-        {/* Dual-Deck Transition Mixer (Deck A: Now Playing vs Deck B: Queued/Fade) */}
-        {canUsePerformControls && room && (
+        {/* Dual-Deck Transition Mixer (Concert & Karaoke only — not in Chamber) */}
+        {canUsePerformControls && room && !isChamber && (
           <DualDeckMixer
             open={djMixerOpen}
             onClose={() => setDjMixerOpen(false)}
@@ -1126,6 +1125,7 @@ export function AuditoriumPage() {
           />
         ) : (
           canUsePerformControls &&
+          !isKaraoke &&
           midiDockOpen && (
             <div className="absolute bottom-20 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-2xl border border-amber-500/30 bg-stone-950/90 px-4 py-2.5 shadow-2xl backdrop-blur-md">
               <span className="text-[11px] font-semibold text-amber-300">Live MIDI ({instrument}):</span>
@@ -1308,55 +1308,47 @@ export function AuditoriumPage() {
               <MicActivityDot />
             </button>
 
-            <button
-              disabled={talkbackPending}
-              onClick={() => void handleToggleTalkback()}
-              title="Private Performer Talkback (TBD-08)"
-              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 disabled:cursor-not-allowed ${
-                talkbackPending ? 'ring-2 ring-sky-300/80' : ''
-              } ${talkbackActive ? 'bg-sky-600 text-white' : 'bg-stone-800 text-stone-300 hover:bg-stone-700'}`}
-            >
-              {talkbackPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {talkbackPending ? 'Linking...' : talkbackActive ? 'Talkback On' : 'Talkback'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setDjMixerOpen((v) => !v);
-                setMidiDockOpen(false);
-              }}
-              title="Mở bảng chuyển bài mượt Dual-Deck Mixer (Deck A -> Deck B)"
-              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
-                djMixerOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
-              }`}
-            >
-              <Disc3 className="h-3.5 w-3.5" /> DJ Mix
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                if (midiDockOpen) {
+            {!isChamber && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDjMixerOpen((v) => !v);
                   setMidiDockOpen(false);
-                } else if (isChamber) {
-                  void handleOpenPianoSimulator();
-                } else {
-                  setDjMixerOpen(false);
-                  setMidiDockOpen(true);
+                }}
+                title="Mở bảng chuyển bài mượt Dual-Deck Mixer (Deck A -> Deck B)"
+                className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                  djMixerOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+                }`}
+              >
+                <Disc3 className="h-3.5 w-3.5" /> DJ Mix
+              </button>
+            )}
+
+            {!isKaraoke && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (midiDockOpen) {
+                    setMidiDockOpen(false);
+                  } else if (isChamber) {
+                    void handleOpenPianoSimulator();
+                  } else {
+                    setDjMixerOpen(false);
+                    setMidiDockOpen(true);
+                  }
+                }}
+                title={
+                  isChamber
+                    ? 'Mở Bộ Nhạc Cụ Thính Phòng (Piano / Guitar / Bass / Violin / Drums + Auto-Track Input)'
+                    : 'Mở phím MIDI nhanh'
                 }
-              }}
-              title={
-                isChamber
-                  ? 'Mở Bộ Nhạc Cụ Thính Phòng (Piano / Guitar / Bass / Violin / Drums + Auto-Track Input)'
-                  : 'Mở phím MIDI nhanh'
-              }
-              className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
-                midiDockOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
-              }`}
-            >
-              <Piano className="h-3.5 w-3.5" /> {isChamber ? 'Mở Piano' : 'MIDI'}
-            </button>
+                className={`flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                  midiDockOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+                }`}
+              >
+                <Piano className="h-3.5 w-3.5" /> {isChamber ? 'Mở Piano' : 'MIDI'}
+              </button>
+            )}
 
             <span className="mx-0.5 h-5 w-px shrink-0 bg-stone-700/80" />
 
@@ -1460,8 +1452,15 @@ export function AuditoriumPage() {
               </span>
             </span>
           </div>
-          <div className="flex items-center justify-between gap-1 border-b border-stone-800 px-2.5 py-2">
-            <div className="flex min-w-0 gap-0.5 rounded-lg bg-stone-950 p-0.5 text-[11px]">
+          <div className="flex items-center gap-1.5 border-b border-stone-800 px-2.5 py-2">
+            <button
+              onClick={() => setSidebarOpen(false)}
+              title="Thu gọn thanh bên"
+              className="shrink-0 rounded-lg p-1 text-stone-400 hover:bg-stone-800 hover:text-white"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+            <div className="flex min-w-0 flex-1 gap-0.5 rounded-lg bg-stone-950 p-0.5 text-[11px]">
               <button
                 onClick={() => setSidebarTab('chat')}
                 className={`flex items-center gap-1 rounded-md px-2 py-1 font-semibold transition ${
@@ -1499,12 +1498,6 @@ export function AuditoriumPage() {
                 </>
               )}
             </div>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="rounded-lg p-1 text-stone-400 hover:bg-stone-800 hover:text-white"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
           </div>
 
           {sidebarTab === 'chat' && (
@@ -1550,56 +1543,97 @@ export function AuditoriumPage() {
 
           {sidebarTab === 'people' && (
             <div className="flex-1 space-y-2 overflow-y-auto p-3 text-xs">
-              {participants.map((p) => (
+              {room && (
                 <div
-                  key={p.userId}
-                  className="flex items-center justify-between rounded-xl border border-stone-800/70 bg-stone-950/70 px-3 py-2"
+                  className={`rounded-xl border px-3 py-2 text-[11px] font-medium ${
+                    isPublicOpenRoom
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                      : 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+                  }`}
                 >
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold text-stone-100">
-                      {p.displayName} {p.role === 'ARTIST' ? '★' : ''}
-                    </div>
-                    <div className="text-[10px] text-stone-400">
-                      {p.role} {p.seatId ? `• Seat ${p.seatId}` : '• Aisle'}
-                    </div>
-                  </div>
-                  <div className="flex gap-1">
-                    {isPerformerOrHost && p.role === 'AUDIENCE' && token && (
-                      <button
-                        onClick={() => void handleInvitePerformer(p.userId)}
-                        title="Invite to Stage (LMR-09)"
-                        className="rounded bg-amber-500/20 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/30"
-                      >
-                        <UserPlus className="inline h-3 w-3" />
-                      </button>
-                    )}
-                    {isHostOrAdmin && p.userId !== effectiveUserId && token && (
-                      <>
-                        <button
-                          onClick={() => void handleModerate(p.userId, 'MUTE')}
-                          className="rounded bg-stone-800 px-2 py-1 text-[10px] text-amber-300 hover:bg-stone-700"
-                        >
-                          Mute
-                        </button>
-                        <button
-                          onClick={() => void handleModerate(p.userId, 'KICK')}
-                          className="rounded bg-stone-800 px-2 py-1 text-[10px] text-red-300 hover:bg-stone-700"
-                        >
-                          Kick
-                        </button>
-                        {isAdmin && (
-                          <button
-                            onClick={() => void handleModerate(p.userId, 'BAN')}
-                            className="rounded bg-red-950 px-2 py-1 text-[10px] text-red-300 hover:bg-red-900"
-                          >
-                            Ban
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  {isPublicOpenRoom ? (
+                    <span>🔓 Phòng Public • Không cần Host (Tự do biểu diễn)</span>
+                  ) : isPrivateRoom ? (
+                    <span>
+                      🔒 Phòng Private • Luôn có duy nhất 1 Host
+                      {isSoleRoomHost ? ' (Bạn là Host)' : ''}
+                    </span>
+                  ) : (
+                    <span>🎤 Phòng Concert • Điều phối bởi Nghệ sĩ / Host</span>
+                  )}
                 </div>
-              ))}
+              )}
+
+              {participants.map((p) => {
+                const isParticipantSoleHost = Boolean(room?.concert.hostUserId && p.userId === room.concert.hostUserId);
+                return (
+                  <div
+                    key={p.userId}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-stone-800/70 bg-stone-950/70 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 truncate font-semibold text-stone-100">
+                        <span className="truncate">
+                          {p.displayName} {p.role === 'ARTIST' ? '★' : ''}
+                        </span>
+                        {isParticipantSoleHost && (
+                          <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+                            👑 Host
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-stone-400">
+                        {p.role} {p.seatId ? `• Seat ${p.seatId}` : '• Aisle'}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                      {isPrivateRoom && (isSoleRoomHost || isAdmin) && !isParticipantSoleHost && (
+                        <button
+                          type="button"
+                          onClick={() => realtimeStore.send({ type: 'TRANSFER_HOST', targetUserId: p.userId })}
+                          title="Chuyển quyền Host duy nhất cho người này"
+                          className="rounded bg-amber-500/20 px-2 py-1 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-500 hover:text-stone-950"
+                        >
+                          👑 Chuyển Host
+                        </button>
+                      )}
+                      {isPerformerOrHost && p.role === 'AUDIENCE' && token && (
+                        <button
+                          onClick={() => void handleInvitePerformer(p.userId)}
+                          title="Invite to Stage (LMR-09)"
+                          className="rounded bg-amber-500/20 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-500/30"
+                        >
+                          <UserPlus className="inline h-3 w-3" />
+                        </button>
+                      )}
+                      {isHostOrAdmin && p.userId !== effectiveUserId && token && (
+                        <>
+                          <button
+                            onClick={() => void handleModerate(p.userId, 'MUTE')}
+                            className="rounded bg-stone-800 px-2 py-1 text-[10px] text-amber-300 hover:bg-stone-700"
+                          >
+                            Mute
+                          </button>
+                          <button
+                            onClick={() => void handleModerate(p.userId, 'KICK')}
+                            className="rounded bg-stone-800 px-2 py-1 text-[10px] text-red-300 hover:bg-stone-700"
+                          >
+                            Kick
+                          </button>
+                          {isAdmin && (
+                            <button
+                              onClick={() => void handleModerate(p.userId, 'BAN')}
+                              className="rounded bg-red-950 px-2 py-1 text-[10px] text-red-300 hover:bg-red-900"
+                            >
+                              Ban
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
 

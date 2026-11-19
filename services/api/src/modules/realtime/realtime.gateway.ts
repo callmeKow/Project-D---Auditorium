@@ -372,8 +372,8 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'SET_LIGHTING_CUE': {
-          // Host, Artist, Admin (or any participant in open Karaoke mode) can adjust lighting cues
-          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          // Host, Artist, Admin (or any participant in public Karaoke/Chamber mode) can adjust lighting cues
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) return;
 
           const current = room.concert.setlist[room.concert.currentSetlistIndex];
           if (current) {
@@ -386,7 +386,7 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'SELECT_SETLIST_ITEM': {
-          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) return;
           if (parsed.index >= 0 && parsed.index < room.concert.setlist.length) {
             room.concert.currentSetlistIndex = parsed.index;
             if (room.concert.state === 'PREPARING' || room.concert.state === 'SOUND_CHECK' || room.concert.state === 'PAUSED') {
@@ -408,7 +408,7 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'PERFORMER_CONCERT_CONTROL': {
-          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) {
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) {
             return;
           }
           const concert = room.concert;
@@ -480,7 +480,7 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'SET_PLAYBACK_MODE': {
-          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) return;
           room.concert.playbackMode = parsed.mode === 'QUEUE_NEXT' ? 'QUEUE_NEXT' : 'REPEAT_ONE';
           broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
           setImmediate(persistRooms);
@@ -488,12 +488,32 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'REORDER_SETLIST': {
-          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) return;
           if (Array.isArray(parsed.orderedIds) && parsed.orderedIds.length > 0) {
             reorderSetlist(room.concert, parsed.orderedIds);
             broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
             setImmediate(persistRooms);
           }
+          break;
+        }
+
+        case 'TRANSFER_HOST': {
+          // Only Private rooms have a sole Host, and only that Host (or Admin) can transfer it to a present participant
+          if (!room.isPrivate) return;
+          if (session.userId !== room.concert.hostUserId && session.role !== 'ADMIN') return;
+          const clients = roomClients.get(session.roomId);
+          const target = clients?.get(parsed.targetUserId);
+          if (!target || target.userId === room.concert.hostUserId) return;
+
+          room.concert.hostUserId = target.userId;
+          room.concert.performerName = target.displayName;
+          broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
+          broadcastToRoom(session.roomId, {
+            priority: 'P2',
+            type: 'SYSTEM_NOTICE',
+            text: `👑 ${target.displayName} đã được chuyển quyền làm Host duy nhất của phòng.`,
+          });
+          setImmediate(persistRooms);
           break;
         }
       }

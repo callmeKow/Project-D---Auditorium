@@ -94,7 +94,7 @@ export function DualDeckMixer({
   const [crossfader, setCrossfader] = useState(0); // 0 = Deck A, 100 = Deck B
   const [deckBVolume, setDeckBVolume] = useState(0);
   const [micGain, setMicGain] = useState(initialAudio.inputGain);
-  const [fadeTimeSec, setFadeTimeSec] = useState(5);
+  const [fadeTimeSec, setFadeTimeSec] = useState(4);
   const [echoTailMix, setEchoTailMix] = useState(initialAudio.stageEchoEnabled ? initialAudio.stageEchoMix : 0);
   const [cuePlaying, setCuePlaying] = useState(false);
   const [cueReady, setCueReady] = useState(false);

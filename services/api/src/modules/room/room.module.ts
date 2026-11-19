@@ -5,6 +5,7 @@ import { loadSnapshot, saveSnapshot } from '../../infrastructure/persistence.js'
 
 const rooms = new Map<string, RoomDTO>();
 const roomPasscodes = new Map<string, string>(); // roomId -> passcode (never leaked in RoomDTO)
+const roomCreators = new Map<string, string>(); // roomId -> creator userId (for TBD-03 quota even when public room has no Host)
 const MAX_ACTIVE_ROOMS_PER_USER = 1; // TBD-03 PO Decision
 
 function createSeededChamberRoom(): RoomDTO {
@@ -24,7 +25,7 @@ function createSeededChamberRoom(): RoomDTO {
       title: 'Đêm Nhạc Thính Phòng & Piano Live',
       genre: 'Classical / Acoustic',
       format: 'SOLO',
-      hostUserId: 'user-artist-1',
+      hostUserId: '', // Public Chamber room requires no Host
       performerName: 'Linh Piano',
       invitedPerformerIds: [],
       scheduledAt: new Date(Date.now() + 15 * 60_000).toISOString(),
@@ -122,7 +123,7 @@ function createSeededKaraokeRoom(): RoomDTO {
       title: 'Hát Cho Nhau Nghe • Đêm Nhạc Tự Do Karaoke',
       genre: 'Karaoke / Ballad / V-Pop',
       format: 'DUO',
-      hostUserId: 'user-artist-1',
+      hostUserId: '', // Public Karaoke room requires no Host
       performerName: 'Cả Phòng Hát Tự Do',
       invitedPerformerIds: [],
       scheduledAt: new Date().toISOString(),
@@ -321,7 +322,10 @@ export function createSmallRoom(params: {
 }): RoomDTO {
   // TBD-03: Max 1 active room per account
   const activeOwned = Array.from(rooms.values()).filter(
-    (r) => r.concert.hostUserId === params.hostUserId && r.state !== 'CLOSED' && r.state !== 'CLOSING'
+    (r) =>
+      (r.concert.hostUserId === params.hostUserId || roomCreators.get(r.id) === params.hostUserId) &&
+      r.state !== 'CLOSED' &&
+      r.state !== 'CLOSING'
   );
   if (activeOwned.length >= MAX_ACTIVE_ROOMS_PER_USER) {
     throw new Error('ROOM_QUOTA_EXCEEDED: Each account may host at most 1 active room (TBD-03).');
@@ -341,6 +345,8 @@ export function createSmallRoom(params: {
 
   const defaultLighting =
     venueStyle === 'CONCERT' ? 'DYNAMIC_CONCERT' : isKaraoke ? 'KTV_PARTY' : 'WARM_CHAMBER';
+  // Public Karaoke & Public Chamber rooms have no Host; Private rooms (and Concert) assign creator as sole Host
+  const requiresHost = isPrivate || venueStyle === 'CONCERT';
 
   const concert: ConcertDTO = {
     id: `concert-${crypto.randomUUID().slice(0, 8)}`,
@@ -360,7 +366,7 @@ export function createSmallRoom(params: {
           ? 'Karaoke / Ballad / V-Pop'
           : 'Classical / Ballad'),
     format: params.format,
-    hostUserId: params.hostUserId,
+    hostUserId: requiresHost ? params.hostUserId : '',
     performerName: params.performerName,
     invitedPerformerIds: [],
     scheduledAt: new Date().toISOString(),
@@ -412,6 +418,7 @@ export function createSmallRoom(params: {
   }
 
   rooms.set(room.id, room);
+  roomCreators.set(room.id, params.hostUserId);
   persistRooms();
   return room;
 }

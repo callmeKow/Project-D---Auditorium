@@ -174,7 +174,7 @@ export function createApp() {
     if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
     const room = getRoomById(req.params.roomId);
     if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
-    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle)) {
+    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle, room.isPrivate)) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     try {
@@ -193,7 +193,7 @@ export function createApp() {
     if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
     const room = getRoomById(req.params.roomId);
     if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
-    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle)) {
+    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle, room.isPrivate)) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     try {
@@ -260,7 +260,10 @@ export function createApp() {
     if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
     const room = getRoomById(req.params.roomId);
     if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
-    if (!user.roles.includes('ADMIN') && !user.roles.includes('HOST') && room.concert.hostUserId !== user.id) {
+    const canLockSeat = room.isPrivate
+      ? user.roles.includes('ADMIN') || room.concert.hostUserId === user.id
+      : user.roles.includes('ADMIN') || user.roles.includes('HOST') || room.concert.hostUserId === user.id;
+    if (!canLockSeat) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     try {

@@ -15,9 +15,11 @@ export function canControlConcert(
   userId: string,
   userRoles: UserRole[],
   concert: ConcertDTO,
-  venueStyle?: VenueStyle
+  venueStyle?: VenueStyle,
+  isPrivate = false
 ): boolean {
-  if (venueStyle === 'KARAOKE') return true; // Open free-sing & playlist mode in Karaoke Lounge
+  // Public Karaoke & Public Chamber/Opera rooms do not require a Host: any participant can freely sing, play & manage playlist
+  if (!isPrivate && (venueStyle === 'KARAOKE' || venueStyle === 'CHAMBER')) return true;
   if (hasAnyRole(userRoles, ['ADMIN', 'HOST', 'ARTIST'])) return true;
   if (concert.hostUserId === userId) return true;
   return concert.invitedPerformerIds.includes(userId);
