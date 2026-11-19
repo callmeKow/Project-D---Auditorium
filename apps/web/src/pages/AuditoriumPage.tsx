@@ -1052,13 +1052,20 @@ export function AuditoriumPage() {
           <button
             onClick={() =>
               setCameraMode((m) =>
-                m === 'AUDIENCE_ORBIT' ? 'STAGE_VIEW' : m === 'STAGE_VIEW' ? 'SEAT_POV' : 'AUDIENCE_ORBIT'
+                m === 'AUDIENCE_ORBIT'
+                  ? 'STAGE_VIEW'
+                  : m === 'STAGE_VIEW'
+                    ? 'SEAT_POV'
+                    : m === 'SEAT_POV'
+                      ? 'ROOM_OVERVIEW'
+                      : 'AUDIENCE_ORBIT'
               )
             }
+            title="Chuyển góc nhìn (Khán giả / Sân khấu / Ghế ngồi / Toàn cảnh phòng)"
             className="flex items-center gap-1.5 rounded-xl border border-stone-700/80 bg-stone-950/80 px-3 py-1.5 text-xs text-stone-200 backdrop-blur transition hover:bg-stone-800"
           >
             <Camera className="h-3.5 w-3.5 text-amber-400" />
-            {cameraMode.replace('_', ' ')}
+            {cameraMode === 'ROOM_OVERVIEW' ? 'Toàn cảnh phòng' : cameraMode.replace('_', ' ')}
           </button>
 
           <button

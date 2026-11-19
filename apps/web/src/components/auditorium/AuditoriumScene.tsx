@@ -15,7 +15,7 @@ import { realtimeStore, type AvatarRuntimeEntry } from '../../realtime/realtimeS
 import { audioEngine } from '../../audio/audioEngine';
 import { RiggedAudienceAvatar } from './RiggedAudienceAvatar';
 
-export type CameraMode = 'AUDIENCE_ORBIT' | 'STAGE_VIEW' | 'SEAT_POV' | 'KARAOKE_STAGE_POV';
+export type CameraMode = 'AUDIENCE_ORBIT' | 'STAGE_VIEW' | 'SEAT_POV' | 'ROOM_OVERVIEW' | 'KARAOKE_STAGE_POV';
 
 // Keep camera strictly inside the auditorium walls (|x| <= 6.4, y in 0..6.35, z in -4.28..9.85)
 const CAMERA_BOUNDS = {
@@ -1977,6 +1977,14 @@ function AuditoriumController({
       } else {
         camera.lookAt(0, 1.2, -1.0);
       }
+    } else if (cameraMode === 'ROOM_OVERVIEW') {
+      camera.position.set(5.2, 5.45, 8.7);
+      if (controlsRef.current) {
+        controlsRef.current.target.set(0, 1.1, 1.5);
+        controlsRef.current.update();
+      } else {
+        camera.lookAt(0, 1.1, 1.5);
+      }
     } else if (cameraMode === 'KARAOKE_STAGE_POV') {
       const local = realtimeStore.avatars.get(localUserId);
       const stageX = local ? local.targetPosition[0] * 0.45 : 0;
@@ -2075,6 +2083,14 @@ function AuditoriumController({
     if (cameraMode === 'SEAT_POV') {
       camera.position.set(local.targetPosition[0], local.targetPosition[1] + 1.25, local.targetPosition[2] - 0.15);
       camera.lookAt(0, 1.2, -2.2);
+    } else if (cameraMode === 'ROOM_OVERVIEW') {
+      camera.position.set(5.2, 5.45, 8.7);
+      if (controlsRef.current) {
+        controlsRef.current.target.set(0, 1.1, 1.5);
+        controlsRef.current.update();
+      } else {
+        camera.lookAt(0, 1.1, 1.5);
+      }
     } else if (cameraMode === 'KARAOKE_STAGE_POV') {
       camera.position.set(local.targetPosition[0] * 0.45, 2.35, -3.25);
       camera.lookAt(0, 1.95, 5.8);
@@ -2411,7 +2427,7 @@ export function AuditoriumScene({
           minPolarAngle={0.28}
           maxPolarAngle={Math.PI / 2 - 0.06}
           minDistance={1.8}
-          maxDistance={10.2}
+          maxDistance={cameraMode === 'ROOM_OVERVIEW' ? 13.5 : 10.2}
           onChange={(ev) => {
             const ctrl = ev?.target;
             if (!ctrl) return;
