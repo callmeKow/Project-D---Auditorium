@@ -87,9 +87,6 @@ export function PerformerMicPanel({
   const [meter2, setMeter2] = useState<AudioMeterSnapshot>({ rms: 0, peak: 0, clipping: false, gateOpen: true });
   const [musicVolume, setMusicVolume] = useState(initial.musicVolume);
   const [musicMuted, setMusicMuted] = useState(initial.musicMuted);
-  const [musicBassDb, setMusicBassDb] = useState(initial.musicBassDb);
-  const [emoteVolume, setEmoteVolume] = useState(initial.emoteVolume);
-  const [emoteMuted, setEmoteMuted] = useState(initial.emoteMuted);
   const [activePreset, setActivePreset] = useState<KaraokePresetId>(initial.karaokePreset);
   const [stageEcho, setStageEcho] = useState(initial.stageEchoEnabled);
   const [stageEchoMix, setStageEchoMix] = useState(initial.stageEchoMix);
@@ -123,16 +120,11 @@ export function PerformerMicPanel({
   }, [open, isBroadcasting]);
 
   useEffect(() => {
-    const unsubEmote = audioEngine.subscribeEmoteVolume((vol, muted) => {
-      setEmoteVolume(vol);
-      setEmoteMuted(muted);
-    });
     const unsubMusic = audioEngine.subscribeMusicVolume((vol, muted) => {
       setMusicVolume(vol);
       setMusicMuted(muted);
     });
     return () => {
-      unsubEmote();
       unsubMusic();
     };
   }, []);
@@ -767,80 +759,6 @@ export function PerformerMicPanel({
                   audioEngine.setMusicVolume(vol, vol === 0);
                 }}
                 className="mt-1 w-full accent-purple-500"
-              />
-            </div>
-
-            <div className="border-t border-stone-800/80 pt-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-medium text-fuchsia-200" title="Low-Shelf Bass EQ 110Hz cho nhạc Web Audio / File">
-                  🎚️ Âm Bass nhạc (110Hz EQ)
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMusicBassDb(0);
-                    audioEngine.setMusicBass(0);
-                  }}
-                  title="Bấm để đặt lại 0 dB"
-                  className="font-mono font-semibold text-fuchsia-300 hover:text-white"
-                >
-                  {musicBassDb > 0 ? `+${musicBassDb} dB` : `${musicBassDb} dB`}
-                </button>
-              </div>
-              <input
-                type="range"
-                min={-12}
-                max={14}
-                step={1}
-                value={musicBassDb}
-                onChange={(e) => {
-                  const db = Number(e.target.value);
-                  setMusicBassDb(db);
-                  audioEngine.setMusicBass(db);
-                }}
-                className="mt-1 w-full accent-fuchsia-500"
-              />
-              <div className="text-[9px] text-stone-500">
-                Áp dụng cho nhạc file/Web Audio &amp; độ nảy Bass LED (YouTube iframe bị trình duyệt khóa EQ).
-              </div>
-            </div>
-
-            <div className="border-t border-stone-800/80 pt-1.5">
-              <div className="flex items-center justify-between text-[11px]">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextMute = !emoteMuted;
-                    setEmoteMuted(nextMute);
-                    audioEngine.setEmoteVolume(emoteVolume, nextMute);
-                  }}
-                  className="inline-flex items-center gap-1 font-medium text-amber-200 hover:text-white"
-                  title="Bấm để tắt/bật nhanh âm thanh Emote"
-                >
-                  {emoteMuted || emoteVolume === 0 ? (
-                    <VolumeX className="h-3.5 w-3.5 text-red-400" />
-                  ) : (
-                    <Sparkles className="h-3.5 w-3.5 text-amber-400" />
-                  )}
-                  Âm lượng Emote (SFX)
-                </button>
-                <span className="font-mono font-semibold text-amber-300">
-                  {emoteMuted || emoteVolume === 0 ? 'MUTED' : `${emoteVolume}%`}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={1}
-                value={emoteVolume}
-                onChange={(e) => {
-                  const vol = Number(e.target.value);
-                  setEmoteVolume(vol);
-                  if (vol > 0 && emoteMuted) setEmoteMuted(false);
-                  audioEngine.setEmoteVolume(vol, vol === 0);
-                }}
-                className="mt-1 w-full accent-amber-400"
               />
             </div>
           </div>
