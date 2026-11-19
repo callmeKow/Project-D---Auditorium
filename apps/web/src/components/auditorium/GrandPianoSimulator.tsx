@@ -381,11 +381,78 @@ const QUICK_SHEET_SONGS: QuickSheetSong[] = [
 ];
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const CUSTOM_KEYBINDS_STORAGE_KEY = 'vmw_musicca_custom_keybinds_v1';
 
 function formatMidiNoteName(midi: number): string {
   const name = NOTE_NAMES[((midi % 12) + 12) % 12];
   const oct = Math.floor(midi / 12) - 1;
   return `${name}${oct}`;
+}
+
+function formatKeyCodeLabel(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return `N${code.slice(6)}`;
+  const special: Record<string, string> = {
+    Comma: ',',
+    Period: '.',
+    Slash: '/',
+    Semicolon: ';',
+    Quote: "'",
+    BracketLeft: '[',
+    BracketRight: ']',
+    Backslash: '\\',
+    Minus: '-',
+    Equal: '=',
+    Backquote: '`',
+  };
+  return special[code] ?? code.slice(0, 3).toUpperCase();
+}
+
+function getDefaultPianoKeyMap(): Record<number, string> {
+  const out: Record<number, string> = {};
+  for (const def of PIANO_KEY_DEFS) {
+    out[def.semitoneOffset] = def.codes[0];
+  }
+  return out;
+}
+
+function getDefaultDrumKeyMap(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const piece of MUSICCA_DRUM_KIT) {
+    out[piece.id] = piece.codes[0];
+  }
+  return out;
+}
+
+function loadSavedKeybinds(): { piano: Record<number, string>; drums: Record<string, string> } {
+  const defaults = { piano: getDefaultPianoKeyMap(), drums: getDefaultDrumKeyMap() };
+  if (typeof window === 'undefined') return defaults;
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_KEYBINDS_STORAGE_KEY);
+    if (!raw) return defaults;
+    const parsed = JSON.parse(raw) as { piano?: Record<string, string>; drums?: Record<string, string> };
+    const piano = { ...defaults.piano };
+    if (parsed.piano) {
+      for (const [k, v] of Object.entries(parsed.piano)) {
+        const idx = Number(k);
+        if (!Number.isNaN(idx) && typeof v === 'string' && v.length > 0) {
+          piano[idx] = v;
+        }
+      }
+    }
+    const drums = { ...defaults.drums };
+    if (parsed.drums) {
+      for (const [k, v] of Object.entries(parsed.drums)) {
+        if (k in drums && typeof v === 'string' && v.length > 0) {
+          drums[k] = v;
+        }
+      }
+    }
+    return { piano, drums };
+  } catch {
+    return defaults;
+  }
 }
 
 export function GrandPianoSimulator({
@@ -416,6 +483,28 @@ export function GrandPianoSimulator({
   const [markGuideEnabled, setMarkGuideEnabled] = useState(true);
   const [selectedGuitarChord, setSelectedGuitarChord] = useState<string>('C');
   const [isPlayingDemo, setIsPlayingDemo] = useState(false);
+  const [customKeybinds, setCustomKeybinds] = useState(() => loadSavedKeybinds());
+  const [isEditingKeybinds, setIsEditingKeybinds] = useState(false);
+  const [listeningTarget, setListeningTarget] = useState<
+    { kind: 'PIANO'; semitoneOffset: number; noteLabel: string } | { kind: 'DRUMS'; pieceId: string; noteLabel: string } | null
+  >(null);
+
+  const persistKeybinds = useCallback((next: { piano: Record<number, string>; drums: Record<string, string> }) => {
+    setCustomKeybinds(next);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(CUSTOM_KEYBINDS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage quota errors
+      }
+    }
+  }, []);
+
+  const handleResetDefaultKeybinds = useCallback(() => {
+    const defaults = { piano: getDefaultPianoKeyMap(), drums: getDefaultDrumKeyMap() };
+    persistKeybinds(defaults);
+    setListeningTarget(null);
+  }, [persistKeybinds]);
 
   // Auto-Tracked Input Device State
   const [scanningInputs, setScanningInputs] = useState(true);
@@ -449,16 +538,15 @@ export function GrandPianoSimulator({
     audioEngine.releaseAllPianoNotes();
   };
 
-  // Piano key code -> semitone offset map
+  // Piano key code -> semitone offset map (supports user-customized keybinds + secondary defaults)
   const pianoCodeToOffsetMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const def of PIANO_KEY_DEFS) {
-      for (const code of def.codes) {
-        map.set(code, def.semitoneOffset);
-      }
+      const assigned = customKeybinds.piano[def.semitoneOffset] ?? def.codes[0];
+      map.set(assigned, def.semitoneOffset);
     }
     return map;
-  }, []);
+  }, [customKeybinds.piano]);
 
   // String instrument (Guitar, Bass, Violin) code -> MIDI map
   const stringCodeToMidiMap = useMemo(() => {
@@ -479,16 +567,15 @@ export function GrandPianoSimulator({
     return map;
   }, [activeInstrument]);
 
-  // Drum kit code -> MIDI map
+  // Drum kit code -> MIDI map (supports user-customized keybinds)
   const drumCodeToMidiMap = useMemo(() => {
     const map = new Map<string, number>();
     for (const piece of MUSICCA_DRUM_KIT) {
-      for (const code of piece.codes) {
-        map.set(code, piece.midi);
-      }
+      const assigned = customKeybinds.drums[piece.id] ?? piece.codes[0];
+      map.set(assigned, piece.midi);
     }
     return map;
-  }, []);
+  }, [customKeybinds.drums]);
 
   const syncActiveNotesState = useCallback(() => {
     setActiveMidiNotes(Array.from(activeNotesSetRef.current).sort((a, b) => a - b));
@@ -605,6 +692,53 @@ export function GrandPianoSimulator({
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
 
+      // Keybind Customization Capture Mode
+      if (isEditingKeybinds && listeningTarget) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === 'Escape') {
+          setListeningTarget(null);
+          return;
+        }
+        if (
+          e.code === 'Space' ||
+          e.code === 'ArrowLeft' ||
+          e.code === 'ArrowRight' ||
+          e.code.startsWith('Shift') ||
+          e.code.startsWith('Control') ||
+          e.code.startsWith('Alt') ||
+          e.code.startsWith('Meta')
+        ) {
+          return;
+        }
+        if (listeningTarget.kind === 'PIANO') {
+          const nextPiano = { ...customKeybinds.piano };
+          const oldCode = nextPiano[listeningTarget.semitoneOffset];
+          for (const [k, v] of Object.entries(nextPiano)) {
+            if (v === e.code && Number(k) !== listeningTarget.semitoneOffset && oldCode) {
+              nextPiano[Number(k)] = oldCode;
+            }
+          }
+          nextPiano[listeningTarget.semitoneOffset] = e.code;
+          persistKeybinds({ ...customKeybinds, piano: nextPiano });
+          setListeningTarget(null);
+          return;
+        }
+        if (listeningTarget.kind === 'DRUMS') {
+          const nextDrums = { ...customKeybinds.drums };
+          const oldCode = nextDrums[listeningTarget.pieceId];
+          for (const [k, v] of Object.entries(nextDrums)) {
+            if (v === e.code && k !== listeningTarget.pieceId && oldCode) {
+              nextDrums[k] = oldCode;
+            }
+          }
+          nextDrums[listeningTarget.pieceId] = e.code;
+          persistKeybinds({ ...customKeybinds, drums: nextDrums });
+          setListeningTarget(null);
+          return;
+        }
+      }
+
       if (e.code === 'Space') {
         e.preventDefault();
         if (!e.repeat) {
@@ -693,6 +827,10 @@ export function GrandPianoSimulator({
     handleStrumGuitarChord,
     triggerNoteOn,
     triggerNoteOff,
+    isEditingKeybinds,
+    listeningTarget,
+    customKeybinds,
+    persistKeybinds,
   ]);
 
   const handleToggleDemoSong = () => {
@@ -999,11 +1137,58 @@ export function GrandPianoSimulator({
                 Pedal Vang [Space]: {sustainPedal ? 'ON' : 'OFF'}
               </button>
 
+              <button
+                type="button"
+                onClick={() => {
+                  const nextEdit = !isEditingKeybinds;
+                  setIsEditingKeybinds(nextEdit);
+                  if (!nextEdit) setListeningTarget(null);
+                }}
+                title="Tùy chỉnh gán phím bàn phím máy tính tương ứng với từng nốt nhạc"
+                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[10px] font-bold transition ${
+                  isEditingKeybinds
+                    ? 'border-sky-400 bg-sky-500 text-stone-950 shadow'
+                    : 'border-stone-700 bg-stone-900 text-sky-300 hover:border-sky-400/60'
+                }`}
+              >
+                <Keyboard className="h-3 w-3" />
+                {isEditingKeybinds ? '✓ Xong gắn phím' : 'Gắn phím'}
+              </button>
+
+              {isEditingKeybinds && (
+                <button
+                  type="button"
+                  onClick={handleResetDefaultKeybinds}
+                  title="Khôi phục bộ phím mặc định"
+                  className="inline-flex items-center gap-1 rounded-lg border border-stone-700 bg-stone-900 px-2 py-0.5 text-[10px] font-semibold text-stone-300 hover:bg-stone-800"
+                >
+                  <RotateCcw className="h-3 w-3" /> Mặc định
+                </button>
+              )}
+
               <span className="min-w-[80px] rounded bg-stone-900 px-2 py-0.5 text-center font-mono text-[10px] font-bold text-emerald-300">
                 {activeMidiNotes.length > 0 ? activeMidiNotes.map(formatMidiNoteName).join(' • ') : 'Sẵn sàng'}
               </span>
             </div>
           </div>
+
+          {isEditingKeybinds && (
+            <div className="mt-1.5 flex items-center justify-between rounded-lg border border-sky-500/40 bg-sky-500/15 px-3 py-1.5 text-[11px] text-sky-200">
+              <span>
+                {listeningTarget?.kind === 'PIANO' ? (
+                  <>
+                    🎹 Đang chờ bạn nhấn <strong>1 phím trên bàn phím</strong> để gán cho nốt{' '}
+                    <strong className="text-amber-300">{listeningTarget.noteLabel}</strong> (Esc để hủy)...
+                  </>
+                ) : (
+                  <>
+                    ⌨️ <strong>Chế độ gắn phím tùy chỉnh:</strong> Bấm chuột vào bất kỳ nốt đàn nào bên dưới, sau đó nhấn phím bạn muốn gán.
+                  </>
+                )}
+              </span>
+              <span className="text-[10px] text-sky-300/80">Tự động lưu vào trình duyệt</span>
+            </div>
+          )}
 
           <div className="mt-2 rounded-xl border-t-4 border-amber-700/80 bg-gradient-to-b from-stone-950 via-stone-900 to-stone-950 p-2.5 shadow-inner">
             <div className="mb-1 flex items-center justify-between px-1 text-[10px] text-stone-400">
@@ -1026,39 +1211,58 @@ export function GrandPianoSimulator({
                 const midi = baseMidi + wk.semitoneOffset;
                 const isPressed = activeMidiNotes.includes(midi);
                 const isGuidedTarget = markGuideEnabled && targetGuideMidi === midi;
+                const isListening =
+                  isEditingKeybinds &&
+                  listeningTarget?.kind === 'PIANO' &&
+                  listeningTarget.semitoneOffset === wk.semitoneOffset;
                 const noteLabel = `${wk.noteBase}${3 + octaveShift + wk.octaveOffset}`;
+                const keyLabel = formatKeyCodeLabel(customKeybinds.piano[wk.semitoneOffset] ?? wk.codes[0]);
                 return (
                   <button
                     key={wk.semitoneOffset}
                     type="button"
-                    onMouseDown={() => triggerNoteOn(midi, 108)}
-                    onMouseUp={() => triggerNoteOff(midi)}
+                    onMouseDown={() => {
+                      if (isEditingKeybinds) {
+                        setListeningTarget({ kind: 'PIANO', semitoneOffset: wk.semitoneOffset, noteLabel });
+                        return;
+                      }
+                      triggerNoteOn(midi, 108);
+                    }}
+                    onMouseUp={() => {
+                      if (!isEditingKeybinds) triggerNoteOff(midi);
+                    }}
                     onMouseLeave={() => {
-                      if (activeMidiNotes.includes(midi)) triggerNoteOff(midi);
+                      if (!isEditingKeybinds && activeMidiNotes.includes(midi)) triggerNoteOff(midi);
                     }}
                     className={`group relative flex flex-1 flex-col items-center justify-end border-r border-stone-300 pb-2 transition-all duration-75 last:border-r-0 ${
-                      isPressed
-                        ? 'translate-y-[2px] bg-gradient-to-b from-amber-200 via-amber-300 to-amber-400 shadow-[inset_0_3px_10px_rgba(217,119,6,0.45)]'
-                        : isGuidedTarget
-                          ? 'bg-gradient-to-b from-emerald-100 via-emerald-200 to-emerald-300 ring-2 ring-inset ring-emerald-500'
-                          : 'bg-gradient-to-b from-stone-100 via-white to-stone-200 hover:from-amber-50 hover:to-amber-100'
+                      isListening
+                        ? 'bg-gradient-to-b from-sky-200 via-sky-300 to-sky-400 ring-2 ring-inset ring-sky-500'
+                        : isPressed
+                          ? 'translate-y-[2px] bg-gradient-to-b from-amber-200 via-amber-300 to-amber-400 shadow-[inset_0_3px_10px_rgba(217,119,6,0.45)]'
+                          : isGuidedTarget
+                            ? 'bg-gradient-to-b from-emerald-100 via-emerald-200 to-emerald-300 ring-2 ring-inset ring-emerald-500'
+                            : 'bg-gradient-to-b from-stone-100 via-white to-stone-200 hover:from-amber-50 hover:to-amber-100'
                     }`}
                   >
-                    {isGuidedTarget && (
+                    {isGuidedTarget && !isEditingKeybinds && (
                       <span className="mb-1 rounded-full bg-emerald-600 px-1.5 py-0.5 text-[8px] font-black text-white shadow">
                         BẤM
                       </span>
                     )}
                     <span
                       className={`mb-1 flex h-6 w-6 items-center justify-center rounded-md border text-[11px] font-black shadow-sm ${
-                        isPressed
-                          ? 'border-stone-950 bg-stone-950 text-amber-300'
-                          : isGuidedTarget
-                            ? 'border-emerald-700 bg-emerald-700 text-white'
-                            : 'border-stone-300 bg-stone-800 text-amber-300 group-hover:border-amber-500'
+                        isListening
+                          ? 'animate-pulse border-sky-700 bg-sky-600 text-white'
+                          : isPressed
+                            ? 'border-stone-950 bg-stone-950 text-amber-300'
+                            : isGuidedTarget
+                              ? 'border-emerald-700 bg-emerald-700 text-white'
+                              : isEditingKeybinds
+                                ? 'border-sky-400 bg-stone-900 text-sky-300'
+                                : 'border-stone-300 bg-stone-800 text-amber-300 group-hover:border-amber-500'
                       }`}
                     >
-                      {wk.primaryKeyLabel}
+                      {isListening ? '...' : keyLabel}
                     </span>
                     <span className="font-mono text-[10px] font-bold text-stone-700">{noteLabel}</span>
                   </button>
@@ -1069,10 +1273,15 @@ export function GrandPianoSimulator({
                 const midi = baseMidi + bk.semitoneOffset;
                 const isPressed = activeMidiNotes.includes(midi);
                 const isGuidedTarget = markGuideEnabled && targetGuideMidi === midi;
+                const isListening =
+                  isEditingKeybinds &&
+                  listeningTarget?.kind === 'PIANO' &&
+                  listeningTarget.semitoneOffset === bk.semitoneOffset;
                 const prevWhiteIdx = whiteKeyIndexBySemitone.get(bk.semitoneOffset - 1) ?? 0;
                 const leftPct = ((prevWhiteIdx + 1) / whiteKeys.length) * 100;
                 const widthPct = (0.64 / whiteKeys.length) * 100;
                 const noteLabel = `${bk.noteBase}${3 + octaveShift + bk.octaveOffset}`;
+                const keyLabel = formatKeyCodeLabel(customKeybinds.piano[bk.semitoneOffset] ?? bk.codes[0]);
 
                 return (
                   <button
@@ -1080,14 +1289,18 @@ export function GrandPianoSimulator({
                     type="button"
                     onMouseDown={(e) => {
                       e.stopPropagation();
+                      if (isEditingKeybinds) {
+                        setListeningTarget({ kind: 'PIANO', semitoneOffset: bk.semitoneOffset, noteLabel });
+                        return;
+                      }
                       triggerNoteOn(midi, 110);
                     }}
                     onMouseUp={(e) => {
                       e.stopPropagation();
-                      triggerNoteOff(midi);
+                      if (!isEditingKeybinds) triggerNoteOff(midi);
                     }}
                     onMouseLeave={() => {
-                      if (activeMidiNotes.includes(midi)) triggerNoteOff(midi);
+                      if (!isEditingKeybinds && activeMidiNotes.includes(midi)) triggerNoteOff(midi);
                     }}
                     style={{
                       left: `${leftPct}%`,
@@ -1095,23 +1308,29 @@ export function GrandPianoSimulator({
                       transform: 'translateX(-50%)',
                     }}
                     className={`group absolute top-0 z-10 flex h-[62%] flex-col items-center justify-end rounded-b-lg border border-stone-700 pb-1.5 shadow-lg transition-all duration-75 ${
-                      isPressed
-                        ? 'h-[60%] bg-gradient-to-b from-amber-500 via-amber-600 to-amber-700 text-stone-950'
-                        : isGuidedTarget
-                          ? 'bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-700 text-white ring-2 ring-emerald-300'
-                          : 'bg-gradient-to-b from-stone-800 via-stone-900 to-black text-stone-200 hover:from-stone-700 hover:to-stone-900'
+                      isListening
+                        ? 'bg-gradient-to-b from-sky-500 via-sky-600 to-sky-700 text-white ring-2 ring-sky-300'
+                        : isPressed
+                          ? 'h-[60%] bg-gradient-to-b from-amber-500 via-amber-600 to-amber-700 text-stone-950'
+                          : isGuidedTarget
+                            ? 'bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-700 text-white ring-2 ring-emerald-300'
+                            : 'bg-gradient-to-b from-stone-800 via-stone-900 to-black text-stone-200 hover:from-stone-700 hover:to-stone-900'
                     }`}
                   >
                     <span
                       className={`mb-0.5 flex h-5 w-5 items-center justify-center rounded text-[10px] font-black ${
-                        isPressed
-                          ? 'bg-stone-950 text-amber-300'
-                          : isGuidedTarget
-                            ? 'bg-emerald-950 text-emerald-200'
-                            : 'border border-stone-600 bg-stone-950/90 text-amber-300'
+                        isListening
+                          ? 'animate-pulse bg-sky-950 text-sky-200'
+                          : isPressed
+                            ? 'bg-stone-950 text-amber-300'
+                            : isGuidedTarget
+                              ? 'bg-emerald-950 text-emerald-200'
+                              : isEditingKeybinds
+                                ? 'border border-sky-400 bg-stone-950 text-sky-300'
+                                : 'border border-stone-600 bg-stone-950/90 text-amber-300'
                       }`}
                     >
-                      {bk.primaryKeyLabel}
+                      {isListening ? '...' : keyLabel}
                     </span>
                     <span className="font-mono text-[8px] text-stone-300">{noteLabel}</span>
                   </button>
@@ -1262,34 +1481,75 @@ export function GrandPianoSimulator({
       {/* ==================== 3. MUSICCA VIRTUAL DRUM KIT ==================== */}
       {activeInstrument === 'DRUMS' && (
         <div className="mt-2 rounded-xl border border-amber-700/40 bg-gradient-to-b from-stone-950 via-stone-900 to-stone-950 p-3">
-          <div className="mb-2 flex items-center justify-between text-[11px] text-stone-300">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-300">
             <span>
-              🥁 <strong className="text-amber-300">Musicca Virtual Drum Kit:</strong> Bấm trực tiếp lên mặt trống hoặc gõ phím tắt chuẩn Musicca (<kbd className="rounded bg-stone-800 px-1 text-amber-200">X/Z</kbd> Kick,{' '}
-              <kbd className="rounded bg-stone-800 px-1 text-amber-200">S/A</kbd> Snare,{' '}
-              <kbd className="rounded bg-stone-800 px-1 text-amber-200">R/T</kbd> Hi-Hat,{' '}
-              <kbd className="rounded bg-stone-800 px-1 text-amber-200">Y/U</kbd> Cymbal).
+              🥁 <strong className="text-amber-300">Musicca Virtual Drum Kit:</strong> Bấm trực tiếp lên mặt trống hoặc gõ phím tắt trên bàn phím.
             </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const nextEdit = !isEditingKeybinds;
+                  setIsEditingKeybinds(nextEdit);
+                  if (!nextEdit) setListeningTarget(null);
+                }}
+                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[10px] font-bold transition ${
+                  isEditingKeybinds
+                    ? 'border-sky-400 bg-sky-500 text-stone-950'
+                    : 'border-stone-700 bg-stone-900 text-sky-300 hover:border-sky-400/60'
+                }`}
+              >
+                <Keyboard className="h-3 w-3" />
+                {isEditingKeybinds ? '✓ Xong gắn phím' : 'Gắn phím trống'}
+              </button>
+              {isEditingKeybinds && (
+                <button
+                  type="button"
+                  onClick={handleResetDefaultKeybinds}
+                  className="inline-flex items-center gap-1 rounded-lg border border-stone-700 bg-stone-900 px-2 py-0.5 text-[10px] text-stone-300 hover:bg-stone-800"
+                >
+                  <RotateCcw className="h-3 w-3" /> Mặc định
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
             {MUSICCA_DRUM_KIT.map((piece) => {
               const isHit = activeMidiNotes.includes(piece.midi);
               const isCymbal = piece.kind === 'CYMBAL' || piece.kind === 'HIHAT';
+              const isListening =
+                isEditingKeybinds && listeningTarget?.kind === 'DRUMS' && listeningTarget.pieceId === piece.id;
+              const drumKeyLabel = formatKeyCodeLabel(customKeybinds.drums[piece.id] ?? piece.codes[0]);
               return (
                 <button
                   key={piece.id}
                   type="button"
-                  onMouseDown={() => triggerNoteOn(piece.midi, 115)}
+                  onMouseDown={() => {
+                    if (isEditingKeybinds) {
+                      setListeningTarget({ kind: 'DRUMS', pieceId: piece.id, noteLabel: piece.viLabel });
+                      return;
+                    }
+                    triggerNoteOn(piece.midi, 115);
+                  }}
                   className={`flex flex-col items-center justify-center rounded-2xl border p-2.5 text-center transition-all duration-75 ${
-                    isHit
-                      ? 'scale-95 border-amber-300 bg-amber-500/35 text-white shadow-[0_0_18px_rgba(245,158,11,0.65)]'
-                      : isCymbal
-                        ? 'border-amber-500/40 bg-gradient-to-b from-amber-950/60 to-stone-950 text-amber-100 hover:border-amber-400'
-                        : 'border-stone-700 bg-gradient-to-b from-stone-800/80 to-stone-950 text-stone-100 hover:border-amber-400/60'
+                    isListening
+                      ? 'border-sky-400 bg-sky-500/25 text-white ring-2 ring-sky-400'
+                      : isHit
+                        ? 'scale-95 border-amber-300 bg-amber-500/35 text-white shadow-[0_0_18px_rgba(245,158,11,0.65)]'
+                        : isCymbal
+                          ? 'border-amber-500/40 bg-gradient-to-b from-amber-950/60 to-stone-950 text-amber-100 hover:border-amber-400'
+                          : 'border-stone-700 bg-gradient-to-b from-stone-800/80 to-stone-950 text-stone-100 hover:border-amber-400/60'
                   }`}
                 >
-                  <span className="mb-1 rounded-md border border-amber-400/40 bg-stone-950 px-2 py-0.5 font-mono text-xs font-black text-amber-300">
-                    [{piece.shortcutLabel}]
+                  <span
+                    className={`mb-1 rounded-md border px-2 py-0.5 font-mono text-xs font-black ${
+                      isListening
+                        ? 'animate-pulse border-sky-400 bg-sky-600 text-white'
+                        : 'border-amber-400/40 bg-stone-950 text-amber-300'
+                    }`}
+                  >
+                    {isListening ? '[Nhấn phím...]' : `[${drumKeyLabel}]`}
                   </span>
                   <span className="text-[11px] font-bold">{piece.viLabel}</span>
                   <span className="text-[9px] text-stone-400">{piece.label}</span>
