@@ -821,14 +821,14 @@ export function LandingPage() {
             3D Live Music &amp; Karaoke
           </div>
 
-          <h1 className="mt-4 max-w-4xl text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl">
+          <h1 className="mt-4 text-3xl font-extrabold tracking-tight text-white sm:text-4xl lg:whitespace-nowrap lg:text-5xl">
             Không Gian Âm Nhạc{' '}
             <span className="bg-gradient-to-r from-amber-300 via-fuchsia-400 to-sky-400 bg-clip-text text-transparent">
               3D Sống Động
             </span>
           </h1>
 
-          <p className="mt-3 max-w-2xl text-sm leading-relaxed text-stone-400 sm:text-base">
+          <p className="mt-3 max-w-4xl text-sm leading-relaxed text-stone-400 sm:text-base lg:whitespace-nowrap">
             Bước vào Thính phòng, Sân khấu Concert và Phòng Karaoke 3D cùng nhân vật Anime Chibi.
           </p>
 
