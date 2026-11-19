@@ -358,6 +358,60 @@ export function getCachedAudienceRigAssets(): AudienceRigAssets | null {
   return cachedAssets;
 }
 
+/**
+ * Retargets a Mixamo FBX AnimationClip onto the target xbot.glb rest skeleton.
+ * Different Mixamo FBX downloads can bake non-identity rest bone orientations
+ * (e.g. LeftUpLeg/RightUpLeg rotated 180deg around Z) which collapse or twist
+ * xbot.glb's identity-rest bones if played raw. Converting each bone track via:
+ *   Q_tgt(t) = F_parent^-1 * Q_src(t) * F_bone
+ * where F_b = W_src_rest(b)^-1 * W_tgt_rest(b) preserves exact world poses.
+ */
+function retargetMixamoFbxClip(
+  sourceScene: THREE.Group,
+  targetScene: THREE.Group,
+  rawClip: THREE.AnimationClip
+): THREE.AnimationClip {
+  sourceScene.updateMatrixWorld(true);
+  targetScene.updateMatrixWorld(true);
+
+  const clip = rawClip.clone();
+  const wSrcB = new THREE.Quaternion();
+  const wSrcP = new THREE.Quaternion();
+  const wTgtB = new THREE.Quaternion();
+  const wTgtP = new THREE.Quaternion();
+  const qSrc = new THREE.Quaternion();
+  const qTgt = new THREE.Quaternion();
+
+  for (const track of clip.tracks) {
+    if (track instanceof THREE.QuaternionKeyframeTrack && track.name.endsWith('.quaternion')) {
+      const boneName = track.name.slice(0, -'.quaternion'.length);
+      const srcBone = sourceScene.getObjectByName(boneName);
+      const tgtBone = targetScene.getObjectByName(boneName);
+      if (!srcBone || !tgtBone || !srcBone.parent || !tgtBone.parent) continue;
+
+      srcBone.getWorldQuaternion(wSrcB);
+      srcBone.parent.getWorldQuaternion(wSrcP);
+      tgtBone.getWorldQuaternion(wTgtB);
+      tgtBone.parent.getWorldQuaternion(wTgtP);
+
+      const fB = wSrcB.clone().invert().multiply(wTgtB);
+      const fPInv = wSrcP.clone().invert().multiply(wTgtP).invert();
+
+      const vals = track.values;
+      for (let i = 0; i < vals.length; i += 4) {
+        qSrc.set(vals[i], vals[i + 1], vals[i + 2], vals[i + 3]);
+        qTgt.copy(fPInv).multiply(qSrc).multiply(fB).normalize();
+        vals[i] = qTgt.x;
+        vals[i + 1] = qTgt.y;
+        vals[i + 2] = qTgt.z;
+        vals[i + 3] = qTgt.w;
+      }
+    }
+  }
+
+  return clip;
+}
+
 export function loadAudienceRigAssets(): Promise<AudienceRigAssets> {
   if (cachedAssets) return Promise.resolve(cachedAssets);
   if (loadPromise) return loadPromise;
@@ -375,8 +429,10 @@ export function loadAudienceRigAssets(): Promise<AudienceRigAssets> {
   ]).then(([gltf, fbx, fbx2, fbx3, fbx4, fbx5]) => {
     const idleClip = gltf.animations.find((a) => a.name === 'idle') ?? gltf.animations[0];
     const walkClip = gltf.animations.find((a) => a.name === 'walk') ?? idleClip;
-    const extractDanceClip = (loaded: THREE.Group) =>
-      loaded.animations.find((a) => a.tracks.length > 0 && a.duration > 1) ?? loaded.animations[0];
+    const extractDanceClip = (loaded: THREE.Group) => {
+      const raw = loaded.animations.find((a) => a.tracks.length > 0 && a.duration > 1) ?? loaded.animations[0];
+      return retargetMixamoFbxClip(loaded, gltf.scene, raw);
+    };
     const fbxDance = extractDanceClip(fbx);
     const fbxDance2 = extractDanceClip(fbx2);
     const fbxDance3 = extractDanceClip(fbx3);
