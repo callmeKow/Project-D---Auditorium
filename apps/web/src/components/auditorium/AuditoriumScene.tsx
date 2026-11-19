@@ -37,7 +37,13 @@ function clampCameraPosition(cam: THREE.Camera) {
  * Generates an offline studio IBL reflection map via Three.js RoomEnvironment so metallic,
  * clearcoat lacquer (Grand Piano, glass table, speakers, brass, disco ball) and satin floors reflect realistically.
  */
-function SceneEnvironmentReflection({ qualityPreset }: { qualityPreset: QualityPreset }) {
+function SceneEnvironmentReflection({
+  qualityPreset,
+  venueStyle,
+}: {
+  qualityPreset: QualityPreset;
+  venueStyle: VenueStyle;
+}) {
   const { gl, scene } = useThree();
 
   useEffect(() => {
@@ -56,8 +62,13 @@ function SceneEnvironmentReflection({ qualityPreset }: { qualityPreset: QualityP
 
   useEffect(() => {
     const s = scene as THREE.Scene & { environmentIntensity?: number };
-    s.environmentIntensity = qualityPreset === 'HIGH' ? 1.05 : qualityPreset === 'MEDIUM' ? 0.78 : 0.5;
-  }, [scene, qualityPreset]);
+    if (venueStyle === 'CHAMBER') {
+      // Keep Chamber/Opera reflections subtle & cozy so dark wood and velvet stay warm instead of washed out
+      s.environmentIntensity = qualityPreset === 'HIGH' ? 0.42 : qualityPreset === 'MEDIUM' ? 0.32 : 0.2;
+    } else {
+      s.environmentIntensity = qualityPreset === 'HIGH' ? 1.05 : qualityPreset === 'MEDIUM' ? 0.78 : 0.5;
+    }
+  }, [scene, qualityPreset, venueStyle]);
 
   return null;
 }
@@ -67,12 +78,12 @@ const LIGHTING_CONFIG: Record<
   { ambient: string; ambientInt: number; spot: string; spotInt: number; bg: string; sconce: string }
 > = {
   WARM_CHAMBER: {
-    ambient: '#fde68a',
-    ambientInt: 0.34,
-    spot: '#fcd34d',
-    spotInt: 6.8,
-    bg: '#120b07',
-    sconce: '#fbbf24',
+    ambient: '#f59e0b',
+    ambientInt: 0.14,
+    spot: '#fbbf24',
+    spotInt: 4.5,
+    bg: '#0b0604',
+    sconce: '#f59e0b',
   },
   SPOTLIGHT_SOLO: {
     ambient: '#bfdbfe',
@@ -1138,7 +1149,7 @@ function AuditoriumArchitecture({
             <meshStandardMaterial color="#fef3c7" emissive={sconceColor} emissiveIntensity={2.0} />
           </mesh>
           {enableChandelierLights && (
-            <pointLight position={[0, -0.3, 0]} intensity={1.1} distance={8} color={sconceColor} />
+            <pointLight position={[0, -0.3, 0]} intensity={0.55} distance={7.5} color="#f59e0b" />
           )}
         </group>
       ))}
@@ -2078,12 +2089,12 @@ export function AuditoriumScene({
         gl={{
           antialias: qualityPreset !== 'LOW',
           toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: 1.15,
+          toneMappingExposure: venueStyle === 'CHAMBER' ? 0.88 : 1.15,
         }}
         camera={{ position: [0, 3.6, 8.2], fov: 50 }}
         className="h-full w-full"
       >
-      <SceneEnvironmentReflection qualityPreset={qualityPreset} />
+      <SceneEnvironmentReflection qualityPreset={qualityPreset} venueStyle={venueStyle} />
       <color
         attach="background"
         args={[venueStyle === 'KARAOKE' ? '#130920' : venueStyle === 'CONCERT' ? '#07050e' : light.bg]}
@@ -2092,17 +2103,17 @@ export function AuditoriumScene({
         attach="fog"
         args={[
           venueStyle === 'KARAOKE' ? '#130920' : venueStyle === 'CONCERT' ? '#07050e' : light.bg,
-          venueStyle === 'KARAOKE' ? 16 : 13,
-          venueStyle === 'KARAOKE' ? 34 : 29,
+          venueStyle === 'KARAOKE' ? 16 : venueStyle === 'CHAMBER' ? 9 : 13,
+          venueStyle === 'KARAOKE' ? 34 : venueStyle === 'CHAMBER' ? 23 : 29,
         ]}
       />
 
-      {/* Club/Show High-Contrast Fill: subdued in seating area so stage & dance floor shine */}
+      {/* Warm Candlelit Intimate Fill for Chamber/Opera; Club/Show High-Contrast for Concert/Karaoke */}
       <hemisphereLight
         args={[
-          venueStyle === 'KARAOKE' ? '#f5d0fe' : light.ambient,
-          venueStyle === 'KARAOKE' ? '#1e1035' : '#1c0f08',
-          venueStyle === 'CONCERT' ? 0.25 : venueStyle === 'KARAOKE' ? 0.42 : 0.34,
+          venueStyle === 'KARAOKE' ? '#f5d0fe' : venueStyle === 'CHAMBER' ? '#fbbf24' : light.ambient,
+          venueStyle === 'KARAOKE' ? '#1e1035' : '#120905',
+          venueStyle === 'CONCERT' ? 0.25 : venueStyle === 'KARAOKE' ? 0.42 : 0.16,
         ]}
       />
       <ambientLight
@@ -2110,19 +2121,19 @@ export function AuditoriumScene({
         intensity={venueStyle === 'CONCERT' ? 0.18 : venueStyle === 'KARAOKE' ? 0.32 : light.ambientInt}
       />
 
-      {/* Focused Stage Spotlight + High-Contrast Stage/Dance Floor Accent Wash */}
+      {/* Focused Stage Spotlight + Soft Warm Amber Fill for Chamber/Opera */}
       <spotLight
         position={[0, 6.2, 1.4]}
-        angle={0.56}
-        penumbra={0.72}
+        angle={venueStyle === 'CHAMBER' ? 0.45 : 0.56}
+        penumbra={venueStyle === 'CHAMBER' ? 0.9 : 0.72}
         intensity={light.spotInt}
         color={light.spot}
         castShadow={shadowsEnabled}
       />
       {venueStyle === 'CHAMBER' && (
         <>
-          <pointLight position={[-2.4, 3.4, -1.8]} intensity={3.2} distance={9} color="#fde68a" />
-          <pointLight position={[2.4, 3.4, -1.8]} intensity={3.2} distance={9} color="#fde68a" />
+          <pointLight position={[-2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
+          <pointLight position={[2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
         </>
       )}
       {venueStyle === 'KARAOKE' && (
@@ -2231,7 +2242,7 @@ export function AuditoriumScene({
           );
         }
 
-        const velvetColor = isOccupied ? '#b91c1c' : isHeld ? '#d97706' : '#7f1d1d';
+        const velvetColor = isOccupied ? '#991b1b' : isHeld ? '#b45309' : '#581115';
         return (
           <group
             key={seat.id}
