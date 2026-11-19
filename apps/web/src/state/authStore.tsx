@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState } from 'react';
 import type { AvatarPresetId, UserProfile } from '@vmw/contracts';
 import { apiClient } from '../api/client';
+import { realtimeStore } from '../realtime/realtimeStore';
 
 interface AuthContextValue {
   user: UserProfile | null;
@@ -37,6 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateAvatar = async (preset: AvatarPresetId) => {
+    realtimeStore.updateLocalAvatarPreset(preset);
     if (!session.token) return;
     const updated = await apiClient.updateAvatarPreset(preset, session.token);
     setSession(session.token, updated);

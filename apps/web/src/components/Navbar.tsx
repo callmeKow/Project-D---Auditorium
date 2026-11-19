@@ -3,13 +3,9 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Music, LogOut, Shield, Compass, DoorOpen, Sparkles, X, Check } from 'lucide-react';
 import type { AvatarPresetId } from '@vmw/contracts';
 import { useAuth } from '../state/authStore';
+import { CHIBI_PRESET_CATALOG, ChibiPresetAvatarSvg } from './ChibiPresetPreview';
 
-const AVATAR_PRESETS: { id: AvatarPresetId; name: string; desc: string; body: string; accent: string }[] = [
-  { id: 'chibi-classic', name: 'Chibi Classic', desc: 'Formal chamber tuxedo', body: '#1e293b', accent: '#f59e0b' },
-  { id: 'chibi-acoustic', name: 'Chibi Acoustic', desc: 'Warm indie wood tones', body: '#78350f', accent: '#fbbf24' },
-  { id: 'chibi-synth', name: 'Chibi Synth', desc: 'Midnight electric indigo', body: '#312e81', accent: '#38bdf8' },
-  { id: 'chibi-strings', name: 'Chibi Strings', desc: 'Crimson velvet ensemble', body: '#7f1d1d', accent: '#fda4af' },
-];
+const AVATAR_PRESETS = CHIBI_PRESET_CATALOG;
 
 export function Navbar() {
   const { user, logout, updateAvatar } = useAuth();
@@ -17,6 +13,11 @@ export function Navbar() {
   const location = useLocation();
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const [savingAvatar, setSavingAvatar] = useState(false);
+
+  // Hide global top Navbar whenever inside any 3D music/karaoke room
+  if (location.pathname.startsWith('/room/')) {
+    return null;
+  }
 
   const isActive = (path: string) =>
     location.pathname === path
@@ -114,11 +115,11 @@ export function Navbar() {
       {/* Chibi Avatar Preset Switcher Modal */}
       {avatarModalOpen && user && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-          <div className="w-full max-w-md rounded-2xl border border-stone-800 bg-stone-900 p-6 shadow-2xl">
+          <div className="w-full max-w-xl rounded-2xl border border-stone-800 bg-stone-900 p-6 shadow-2xl">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-base font-bold text-white">Select Chibi Avatar Preset</h3>
-                <p className="text-xs text-stone-400">Applies immediately across the 3D Auditorium</p>
+                <h3 className="text-base font-bold text-white">Chọn Outfit Chibi Mặc Định (2 Nam • 2 Nữ)</h3>
+                <p className="text-xs text-stone-400">Áp dụng tức thì trong phòng 3D</p>
               </div>
               <button
                 onClick={() => setAvatarModalOpen(false)}
@@ -136,27 +137,28 @@ export function Navbar() {
                     key={preset.id}
                     disabled={savingAvatar}
                     onClick={() => handleSelectAvatar(preset.id)}
-                    className={`flex flex-col items-start rounded-xl border p-3.5 text-left transition ${
+                    className={`flex flex-col items-center rounded-xl border p-3 text-center transition ${
                       selected
-                        ? 'border-amber-400 bg-amber-500/10 ring-1 ring-amber-400/50'
+                        ? 'border-amber-400 bg-amber-500/15 ring-1 ring-amber-400/50'
                         : 'border-stone-800 bg-stone-950/70 hover:border-stone-700 hover:bg-stone-950'
                     }`}
                   >
                     <div className="flex w-full items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className="h-5 w-5 rounded-full border border-white/20 shadow-inner"
-                          style={{ backgroundColor: preset.body }}
-                        />
-                        <span
-                          className="h-3.5 w-3.5 rounded-full border border-white/20"
-                          style={{ backgroundColor: preset.accent }}
-                        />
-                      </div>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          preset.gender === 'NAM'
+                            ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                            : 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
+                        }`}
+                      >
+                        {preset.genderLabel}
+                      </span>
                       {selected && <Check className="h-4 w-4 text-amber-400" />}
                     </div>
-                    <span className="mt-2.5 text-xs font-bold text-white">{preset.name}</span>
-                    <span className="mt-0.5 text-[11px] text-stone-400">{preset.desc}</span>
+                    <ChibiPresetAvatarSvg presetId={preset.id} className="my-1 h-20 w-20" />
+                    <span className="text-xs font-bold text-white">{preset.name}</span>
+                    <span className="text-[11px] font-semibold text-amber-300">{preset.outfitTitle}</span>
+                    <span className="mt-0.5 text-[10px] text-stone-400">{preset.desc}</span>
                   </button>
                 );
               })}

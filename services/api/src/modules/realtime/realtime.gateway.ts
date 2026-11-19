@@ -13,7 +13,7 @@ import { getRoomById, persistRooms, verifyRoomPasscode } from '../room/room.modu
 import { occupySeat, releaseUserSeats } from '../seating/seating.module.js';
 import { filterChatText, isUserBanned, isUserMuted } from '../moderation/moderation.module.js';
 import { canControlConcert } from '../authorization/authorization.module.js';
-import { transitionConcertState } from '../concert/concert.module.js';
+import { reorderSetlist, transitionConcertState } from '../concert/concert.module.js';
 import { recordAnalyticsEvent } from '../analytics/analytics.module.js';
 
 interface ClientSession {
@@ -147,7 +147,7 @@ export function attachRealtimeGateway(server: HttpServer) {
           ws.close(4004, 'BANNED');
           return;
         }
-        if (room.isPrivate && parsed.userId !== room.concert.hostUserId && !verifyRoomPasscode(room.id, parsed.passcode)) {
+        if ((room.isPrivate || room.hasPasscode) && parsed.userId !== room.concert.hostUserId && !verifyRoomPasscode(room.id, parsed.passcode)) {
           recordAnalyticsEvent({ type: 'ROOM_JOIN_FAILED', userId: parsed.userId, roomId: room.id });
           ws.close(4006, 'INVALID_PASSCODE');
           return;
@@ -174,7 +174,9 @@ export function attachRealtimeGateway(server: HttpServer) {
           room.concert.invitedPerformerIds.includes(parsed.userId);
         const spawnPos: [number, number, number] = hasStageAccess
           ? [0, getAuditoriumFloorY(0, -1.6), -1.6]
-          : [0, 0, 5.2];
+          : room.venueStyle === 'KARAOKE'
+            ? [0, 0, 1.3]
+            : [0, 0, 5.2];
 
         const avatar: AvatarTransformPayload = {
           userId: parsed.userId,
@@ -222,7 +224,9 @@ export function attachRealtimeGateway(server: HttpServer) {
         case 'AVATAR_MOVE': {
           if (parsed.seq <= session.avatar.seq && parsed.seq !== 0) return;
           const stageAccess =
-            session.userId === room.concert.hostUserId || room.concert.invitedPerformerIds.includes(session.userId);
+            room.venueStyle === 'KARAOKE' ||
+            session.userId === room.concert.hostUserId ||
+            room.concert.invitedPerformerIds.includes(session.userId);
           session.avatar.position = clampAuditoriumPosition(parsed.position, session.role, stageAccess);
           session.avatar.rotationY = parsed.rotationY;
           session.avatar.animation = parsed.animation;
@@ -240,7 +244,14 @@ export function attachRealtimeGateway(server: HttpServer) {
             const { occupied, released } = occupySeat(room.seats, parsed.seatId, session.userId);
             session.avatar.seatId = occupied.id;
             session.avatar.position = occupied.position;
-            session.avatar.rotationY = Math.PI;
+            session.avatar.rotationY =
+              room.venueStyle === 'KARAOKE'
+                ? occupied.row === 'L'
+                  ? Math.PI * 0.65
+                  : occupied.row === 'R'
+                    ? -Math.PI * 0.65
+                    : Math.PI
+                : Math.PI;
             session.avatar.animation = 'SIT';
             for (const r of released) {
               broadcastToRoom(session.roomId, { priority: 'P0', type: 'SEAT_UPDATED', seat: r });
@@ -291,6 +302,15 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'REACTION_SEND': {
+          if (
+            parsed.reaction === 'DANCE' ||
+            parsed.reaction === 'DANCE_2' ||
+            parsed.reaction === 'DANCE_3' ||
+            parsed.reaction === 'DANCE_4' ||
+            parsed.reaction === 'DANCE_5'
+          ) {
+            session.avatar.animation = parsed.reaction;
+          }
           broadcastToRoom(session.roomId, {
             priority: 'P2',
             type: 'REACTION',
@@ -352,8 +372,8 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'SET_LIGHTING_CUE': {
-          // Host, Artist, and Admin can adjust room lighting cues
-          if (!canControlConcert(session.userId, [session.role], room.concert)) return;
+          // Host, Artist, Admin (or any participant in open Karaoke mode) can adjust lighting cues
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
 
           const current = room.concert.setlist[room.concert.currentSetlistIndex];
           if (current) {
@@ -366,7 +386,7 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'SELECT_SETLIST_ITEM': {
-          if (!canControlConcert(session.userId, [session.role], room.concert)) return;
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
           if (parsed.index >= 0 && parsed.index < room.concert.setlist.length) {
             room.concert.currentSetlistIndex = parsed.index;
             if (room.concert.state === 'PREPARING' || room.concert.state === 'SOUND_CHECK' || room.concert.state === 'PAUSED') {
@@ -388,7 +408,7 @@ export function attachRealtimeGateway(server: HttpServer) {
         }
 
         case 'PERFORMER_CONCERT_CONTROL': {
-          if (!canControlConcert(session.userId, [session.role], room.concert)) {
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) {
             return;
           }
           const concert = room.concert;
@@ -429,6 +449,9 @@ export function attachRealtimeGateway(server: HttpServer) {
           }
 
           if (parsed.action === 'NEXT_SONG' && concert.setlist.length > 0) {
+            if (typeof parsed.expectedIndex === 'number' && parsed.expectedIndex !== concert.currentSetlistIndex) {
+              return;
+            }
             concert.currentSetlistIndex = (concert.currentSetlistIndex + 1) % concert.setlist.length;
             concert.trackPlaying = true;
             concert.trackStartedAtServerMs = Date.now();
@@ -442,14 +465,35 @@ export function attachRealtimeGateway(server: HttpServer) {
           }
           if (parsed.action === 'END_SONG') {
             const item = concert.setlist[concert.currentSetlistIndex];
+            const karaokeScore =
+              room.venueStyle === 'KARAOKE' ? Math.floor(85 + Math.random() * 16) : undefined;
             broadcastToRoom(session.roomId, {
               priority: 'P2',
               type: 'SONG_ENDED_APPLAUSE',
               setlistItemId: item?.id ?? 'unknown',
+              karaokeScore,
             });
           }
           broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert });
           setImmediate(persistRooms);
+          break;
+        }
+
+        case 'SET_PLAYBACK_MODE': {
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          room.concert.playbackMode = parsed.mode === 'QUEUE_NEXT' ? 'QUEUE_NEXT' : 'REPEAT_ONE';
+          broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
+          setImmediate(persistRooms);
+          break;
+        }
+
+        case 'REORDER_SETLIST': {
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle)) return;
+          if (Array.isArray(parsed.orderedIds) && parsed.orderedIds.length > 0) {
+            reorderSetlist(room.concert, parsed.orderedIds);
+            broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
+            setImmediate(persistRooms);
+          }
           break;
         }
       }

@@ -1,4 +1,4 @@
-import type { ConcertDTO, UserProfile, UserRole } from '@vmw/contracts';
+import type { ConcertDTO, UserProfile, UserRole, VenueStyle } from '@vmw/contracts';
 
 export function hasAnyRole(userRoles: UserRole[], allowed: UserRole[]): boolean {
   return allowed.some((r) => userRoles.includes(r));
@@ -11,7 +11,13 @@ export function assertAdminOrHost(user: UserProfile | null): asserts user is Use
   }
 }
 
-export function canControlConcert(userId: string, userRoles: UserRole[], concert: ConcertDTO): boolean {
+export function canControlConcert(
+  userId: string,
+  userRoles: UserRole[],
+  concert: ConcertDTO,
+  venueStyle?: VenueStyle
+): boolean {
+  if (venueStyle === 'KARAOKE') return true; // Open free-sing & playlist mode in Karaoke Lounge
   if (hasAnyRole(userRoles, ['ADMIN', 'HOST', 'ARTIST'])) return true;
   if (concert.hostUserId === userId) return true;
   return concert.invitedPerformerIds.includes(userId);

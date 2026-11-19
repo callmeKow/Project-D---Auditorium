@@ -21,6 +21,7 @@ import {
   extractYouTubeVideoId,
   invitePerformerToStage,
   removeSetlistItem,
+  reorderSetlist,
   transitionConcertState,
 } from '../modules/concert/concert.module.js';
 import { createSmallRoom, verifyRoomPasscode } from '../modules/room/room.module.js';
@@ -233,5 +234,40 @@ describe('Virtual Music World Core Domain Rules', () => {
     const ytTrack = addSetlistItem(priv.concert, { youtubeUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' });
     expect(ytTrack.youtubeVideoId).toBe('dQw4w9WgXcQ');
     expect(ytTrack.mode).toBe('PRERECORDED');
+  });
+
+  it('supports KARAOKE Lounge room with U-shaped seats (10-15), public+passcode, and open controls', () => {
+    const ktv = createSmallRoom({
+      name: 'Saigon KTV Lounge',
+      capacity: 12,
+      concertTitle: 'Free Singing Night',
+      genre: 'Karaoke / V-Pop',
+      format: 'DUO',
+      venueStyle: 'KARAOKE',
+      hostUserId: 'host-ktv-1',
+      performerName: 'Open Mic',
+      isSpontaneous: true,
+      isPrivate: false,
+      passcode: '8888',
+    });
+
+    expect(ktv.venueStyle).toBe('KARAOKE');
+    expect(ktv.capacity).toBe(12);
+    expect(ktv.seats).toHaveLength(12);
+    expect(ktv.seats.some((s) => s.row === 'L')).toBe(true);
+    expect(ktv.seats.some((s) => s.row === 'C')).toBe(true);
+    expect(ktv.seats.some((s) => s.row === 'R')).toBe(true);
+    expect(ktv.hasPasscode).toBe(true);
+    expect(verifyRoomPasscode(ktv.id, '8888')).toBe(true);
+    expect(canControlConcert('random-guest', ['AUDIENCE'], ktv.concert, 'KARAOKE')).toBe(true);
+
+    const s2 = addSetlistItem(ktv.concert, { title: 'Second KTV Track', mode: 'PRERECORDED' });
+    const s3 = addSetlistItem(ktv.concert, { title: 'Third KTV Track', mode: 'PRERECORDED' });
+    ktv.concert.currentSetlistIndex = 1; // Playing s2
+    reorderSetlist(ktv.concert, [s3.id, s2.id, ktv.concert.setlist[0].id]);
+    expect(ktv.concert.setlist.map((s) => s.id)).toEqual([s3.id, s2.id, ktv.concert.setlist[2].id]);
+    expect(ktv.concert.currentSetlistIndex).toBe(1);
+    reorderSetlist(ktv.concert, [s2.id, s3.id, ktv.concert.setlist[2].id]);
+    expect(ktv.concert.currentSetlistIndex).toBe(0);
   });
 });

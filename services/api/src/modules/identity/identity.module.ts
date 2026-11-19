@@ -1,9 +1,21 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { AvatarPresetId, UserProfile, UserRole } from '@vmw/contracts';
 import { loadSnapshot, saveSnapshot } from '../../infrastructure/persistence.js';
 
 interface StoredUser extends UserProfile {
+  username?: string;
   passwordHash?: string;
+}
+
+interface AdminLocalConfig {
+  username?: string;
+  email?: string;
+  password?: string;
+  displayName?: string;
+  roles?: UserRole[];
+  avatarPresetId?: AvatarPresetId;
 }
 
 const users = new Map<string, StoredUser>();
@@ -37,6 +49,24 @@ function verifyTokenUserId(token: string): string | null {
   return userId || null;
 }
 
+function loadAdminLocalConfig(): AdminLocalConfig | null {
+  if (process.env.VITEST) return null;
+  const candidates = [
+    path.resolve(process.cwd(), 'config/admin.local.json'),
+    path.resolve(process.cwd(), '../../config/admin.local.json'),
+  ];
+  for (const filePath of candidates) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as AdminLocalConfig;
+      if (parsed && parsed.password) return parsed;
+    } catch {
+      // Ignore malformed local admin config
+    }
+  }
+  return null;
+}
+
 function seedDefaultUsers() {
   const demoUsers: StoredUser[] = [
     {
@@ -50,17 +80,6 @@ function seedDefaultUsers() {
       createdAt: Date.now(),
       passwordHash: hashPassword('demo1234'),
     },
-    {
-      id: 'user-admin-1',
-      email: 'admin@vmw.vn',
-      displayName: 'VMW Admin',
-      roles: ['ADMIN', 'HOST', 'AUDIENCE'],
-      avatarPresetId: 'chibi-synth',
-      ageConfirmed16Plus: true,
-      authProvider: 'EMAIL',
-      createdAt: Date.now(),
-      passwordHash: hashPassword('admin1234'),
-    },
   ];
 
   const snapshot = loadSnapshot();
@@ -73,11 +92,46 @@ function seedDefaultUsers() {
     for (const u of snapshot.users as StoredUser[]) {
       users.set(u.id, u);
     }
-    return;
+  } else {
+    for (const u of demoUsers) {
+      users.set(u.id, u);
+    }
   }
 
-  for (const u of demoUsers) {
-    users.set(u.id, u);
+  // Load Admin account solely from gitignored config/admin.local.json (never committed to GitHub)
+  const adminCfg = loadAdminLocalConfig();
+  if (adminCfg && adminCfg.password) {
+    const adminUsername = (adminCfg.username ?? 'Admin').trim();
+    const adminEmail = (adminCfg.email ?? `${adminUsername.toLowerCase()}@vmw.vn`).trim().toLowerCase();
+    users.set('user-admin-1', {
+      id: 'user-admin-1',
+      username: adminUsername,
+      email: adminEmail,
+      displayName: adminCfg.displayName?.trim() || adminUsername,
+      roles: adminCfg.roles?.length ? adminCfg.roles : ['ADMIN', 'HOST', 'AUDIENCE'],
+      avatarPresetId: adminCfg.avatarPresetId ?? 'chibi-synth',
+      ageConfirmed16Plus: true,
+      authProvider: 'EMAIL',
+      createdAt: Date.now(),
+      passwordHash: hashPassword(adminCfg.password),
+    });
+  } else if (process.env.VITEST) {
+    // Ephemeral fallback for automated unit tests only (never persisted or synced in prod)
+    users.set('user-admin-1', {
+      id: 'user-admin-1',
+      username: 'Admin',
+      email: 'admin@vmw.vn',
+      displayName: 'VMW Admin',
+      roles: ['ADMIN', 'HOST', 'AUDIENCE'],
+      avatarPresetId: 'chibi-synth',
+      ageConfirmed16Plus: true,
+      authProvider: 'EMAIL',
+      createdAt: Date.now(),
+      passwordHash: hashPassword('test-admin-pass'),
+    });
+  } else {
+    // Do not keep any stale admin credentials if local config file is absent
+    users.delete('user-admin-1');
   }
 }
 
@@ -137,10 +191,13 @@ export function registerWithEmail(params: {
   return { token, user: stripSecrets(user) };
 }
 
-export function loginWithEmail(email: string, password: string): { token: string; user: UserProfile } {
-  const normalizedEmail = email.trim().toLowerCase();
+export function loginWithEmail(emailOrUsername: string, password: string): { token: string; user: UserProfile } {
+  const normalized = emailOrUsername.trim().toLowerCase();
   for (const user of users.values()) {
-    if (user.email === normalizedEmail && user.passwordHash === hashPassword(password)) {
+    const matchesIdentity =
+      user.email.toLowerCase() === normalized ||
+      (user.username ? user.username.toLowerCase() === normalized : false);
+    if (matchesIdentity && user.passwordHash === hashPassword(password)) {
       const token = issueToken(user.id);
       return { token, user: stripSecrets(user) };
     }

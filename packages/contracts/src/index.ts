@@ -11,6 +11,10 @@ export type AvatarAnimationState =
   | 'CHEER'
   | 'WAVE'
   | 'DANCE'
+  | 'DANCE_2'
+  | 'DANCE_3'
+  | 'DANCE_4'
+  | 'DANCE_5'
   | 'AFK'
   | 'PLAY_PIANO'
   | 'PLAY_GUITAR'
@@ -36,7 +40,7 @@ export type SeatTier = 'FRONT_ROW' | 'VIP' | 'PREMIUM' | 'STANDARD' | 'BALCONY';
 
 export type PerformanceFormat = 'SOLO' | 'DUO' | 'BAND' | 'ORCHESTRA';
 
-export type VenueStyle = 'CHAMBER' | 'CONCERT';
+export type VenueStyle = 'CHAMBER' | 'CONCERT' | 'KARAOKE';
 
 export type AudioInputMode = 'MICROPHONE' | 'AUDIO_INTERFACE' | 'MIDI' | 'VIRTUAL_DAW' | 'PRERECORDED';
 
@@ -68,7 +72,12 @@ export interface SeatDTO {
   position: [number, number, number];
 }
 
-export type LightingPreset = 'WARM_CHAMBER' | 'SPOTLIGHT_SOLO' | 'DYNAMIC_CONCERT' | 'ENCORE_GOLD';
+export type LightingPreset =
+  | 'WARM_CHAMBER'
+  | 'SPOTLIGHT_SOLO'
+  | 'DYNAMIC_CONCERT'
+  | 'ENCORE_GOLD'
+  | 'KTV_PARTY';
 
 export interface SetlistItemDTO {
   id: string;
@@ -94,6 +103,13 @@ export interface ConcertDTO {
   state: ConcertState;
   currentSetlistIndex: number;
   setlist: SetlistItemDTO[];
+  playbackMode?: 'REPEAT_ONE' | 'QUEUE_NEXT';
+  karaokeMics?: {
+    mic1UserId?: string;
+    mic1Name?: string;
+    mic2UserId?: string;
+    mic2Name?: string;
+  };
   isSpontaneous: boolean;
   trackPlaying?: boolean;
   trackStartedAtServerMs?: number;
@@ -106,8 +122,9 @@ export interface RoomDTO {
   name: string;
   roomType: 'SMALL_ROOM' | 'PRIVATE_ROOM';
   venueStyle: VenueStyle;
-  capacity: number; // 10-20 Small Room, 10-30 Private Room (TBD-02)
+  capacity: number; // 10-20 Small Room, 10-30 Private Room (TBD-02), 10-15 Karaoke Lounge
   isPrivate?: boolean;
+  hasPasscode?: boolean;
   state: RoomState;
   memberCount: number;
   seats: SeatDTO[];
@@ -175,7 +192,7 @@ export interface MidiNoteEventPayload {
   clientTimestampMs: number;
 }
 
-export type ReactionType = 'CLAP' | 'CHEER' | 'WAVE' | 'DANCE' | 'FLOWER';
+export type ReactionType = 'CLAP' | 'CHEER' | 'WAVE' | 'DANCE' | 'DANCE_2' | 'DANCE_3' | 'DANCE_4' | 'DANCE_5' | 'FLOWER';
 
 export type RealtimeServerMessage =
   | {
@@ -197,8 +214,9 @@ export type RealtimeServerMessage =
   | { priority: 'P1'; type: 'PONG'; clientSentAt: number; serverTime: number }
   | { priority: 'P2'; type: 'CHAT_MESSAGE'; message: ChatMessageDTO }
   | { priority: 'P2'; type: 'REACTION'; userId: string; displayName?: string; reaction: ReactionType }
-  | { priority: 'P2'; type: 'SONG_ENDED_APPLAUSE'; setlistItemId: string }
-  | { priority: 'P2'; type: 'LIGHTING_CUE'; preset: LightingPreset };
+  | { priority: 'P2'; type: 'SONG_ENDED_APPLAUSE'; setlistItemId: string; karaokeScore?: number }
+  | { priority: 'P2'; type: 'LIGHTING_CUE'; preset: LightingPreset }
+  | { priority: 'P2'; type: 'SYSTEM_NOTICE'; text: string };
 
 export type RealtimeClientMessage =
   | { type: 'JOIN_ROOM'; roomId: string; userId: string; displayName: string; role: UserRole; avatarPresetId: AvatarPresetId; passcode?: string }
@@ -212,8 +230,11 @@ export type RealtimeClientMessage =
   | {
       type: 'PERFORMER_CONCERT_CONTROL';
       action: 'START_SOUND_CHECK' | 'GO_LIVE' | 'PAUSE' | 'INTERMISSION' | 'NEXT_SONG' | 'END_SONG' | 'COMPLETE' | 'TOGGLE_MODE';
+      expectedIndex?: number;
     }
   | { type: 'SELECT_SETLIST_ITEM'; index: number }
+  | { type: 'SET_PLAYBACK_MODE'; mode: 'REPEAT_ONE' | 'QUEUE_NEXT' }
+  | { type: 'REORDER_SETLIST'; orderedIds: string[] }
   | { type: 'SET_LIGHTING_CUE'; preset: LightingPreset }
   | { type: 'PING'; clientSentAt: number };
 

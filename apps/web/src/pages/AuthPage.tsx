@@ -4,13 +4,7 @@ import { Music, ShieldCheck } from 'lucide-react';
 import type { AvatarPresetId } from '@vmw/contracts';
 import { apiClient } from '../api/client';
 import { useAuth } from '../state/authStore';
-
-const AVATARS: { id: AvatarPresetId; label: string; color: string }[] = [
-  { id: 'chibi-classic', label: 'Classic', color: '#1e293b' },
-  { id: 'chibi-acoustic', label: 'Acoustic', color: '#78350f' },
-  { id: 'chibi-synth', label: 'Synth', color: '#312e81' },
-  { id: 'chibi-strings', label: 'Strings', color: '#7f1d1d' },
-];
+import { CHIBI_PRESET_CATALOG, ChibiPresetAvatarSvg } from '../components/ChibiPresetPreview';
 
 export function AuthPage() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -139,9 +133,9 @@ export function AuthPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-stone-400">Chibi Avatar Preset</label>
-                <div className="mt-1.5 grid grid-cols-4 gap-2">
-                  {AVATARS.map((a) => (
+                <label className="block text-xs font-medium text-stone-400">Chọn Outfit Chibi Mặc Định (2 Nam • 2 Nữ)</label>
+                <div className="mt-1.5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {CHIBI_PRESET_CATALOG.map((a) => (
                     <button
                       type="button"
                       key={a.id}
@@ -153,10 +147,15 @@ export function AuthPage() {
                       }`}
                     >
                       <span
-                        className="h-4 w-4 rounded-full border border-white/20"
-                        style={{ backgroundColor: a.color }}
-                      />
-                      {a.label}
+                        className={`rounded-full px-1.5 py-0.5 text-[9px] font-bold ${
+                          a.gender === 'NAM' ? 'bg-sky-500/20 text-sky-300' : 'bg-pink-500/20 text-pink-300'
+                        }`}
+                      >
+                        {a.gender === 'NAM' ? '👦 Nam' : '👧 Nữ'}
+                      </span>
+                      <ChibiPresetAvatarSvg presetId={a.id} className="h-14 w-14" />
+                      <span className="font-bold text-stone-100">{a.name}</span>
+                      <span className="text-[9px] text-stone-400">{a.outfitTitle}</span>
                     </button>
                   ))}
                 </div>
@@ -165,12 +164,15 @@ export function AuthPage() {
           )}
 
           <div>
-            <label className="block text-xs font-medium text-stone-400">Email</label>
+            <label className="block text-xs font-medium text-stone-400">
+              {mode === 'login' ? 'Tài khoản hoặc Email' : 'Email'}
+            </label>
             <input
-              type="email"
+              type={mode === 'login' ? 'text' : 'email'}
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              placeholder={mode === 'login' ? 'linh.piano@vmw.vn hoặc Admin' : 'you@example.com'}
               className="mt-1 w-full rounded-xl border border-stone-700 bg-stone-950 px-3.5 py-2.5 text-sm text-white focus:border-amber-500/60 focus:outline-none"
             />
           </div>
@@ -241,16 +243,6 @@ export function AuthPage() {
                   className="rounded bg-stone-800 px-2 py-1 text-amber-300 hover:bg-stone-700"
                 >
                   Artist
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEmail('admin@vmw.vn');
-                    setPassword('admin1234');
-                  }}
-                  className="rounded bg-stone-800 px-2 py-1 text-sky-300 hover:bg-stone-700"
-                >
-                  Admin
                 </button>
               </div>
             </div>

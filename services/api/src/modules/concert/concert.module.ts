@@ -79,6 +79,28 @@ export function removeSetlistItem(concert: ConcertDTO, itemId: string): ConcertD
   return concert;
 }
 
+export function reorderSetlist(concert: ConcertDTO, orderedIds: string[]): ConcertDTO {
+  const activeItemId = concert.setlist[concert.currentSetlistIndex]?.id;
+  const byId = new Map(concert.setlist.map((s) => [s.id, s]));
+  const reordered: SetlistItemDTO[] = [];
+  for (const id of orderedIds) {
+    const found = byId.get(id);
+    if (found) {
+      reordered.push(found);
+      byId.delete(id);
+    }
+  }
+  for (const leftover of byId.values()) {
+    reordered.push(leftover);
+  }
+  concert.setlist = reordered;
+  if (activeItemId) {
+    const nextIdx = reordered.findIndex((s) => s.id === activeItemId);
+    if (nextIdx >= 0) concert.currentSetlistIndex = nextIdx;
+  }
+  return concert;
+}
+
 export function invitePerformerToStage(concert: ConcertDTO, performerUserId: string): ConcertDTO {
   const cleanId = performerUserId.trim();
   if (!cleanId) throw new Error('INVALID_PERFORMER_ID');

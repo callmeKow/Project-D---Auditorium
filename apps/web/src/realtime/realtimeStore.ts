@@ -46,6 +46,9 @@ class RealtimeRoomStore {
   public chat: ChatMessageDTO[] = [];
   public lightingPreset: LightingPreset = 'WARM_CHAMBER';
   public applauseUntil = 0;
+  public lastKaraokeScore: { score: number; until: number; trackTitle?: string } | null = null;
+  public passcodeRequired = false;
+  public passcodeError: string | null = null;
   public connected = false;
   public reconnecting = false;
   public reconnectAttempt = 0;
@@ -54,6 +57,7 @@ class RealtimeRoomStore {
   public lastMidiLatencyMs: number | null = null;
   public moderationNotice: string | null = null;
   public systemNotice: string | null = null;
+  private ignoreNextLeaveSeatEchoUntil = 0;
 
   private listeners = new Set<Listener>();
   private signalHandler: ((fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: unknown) => void) | null = null;
@@ -131,6 +135,8 @@ class RealtimeRoomStore {
           if (msg.serverTime) {
             this.serverClockOffsetMs = msg.serverTime - Date.now();
           }
+          this.passcodeRequired = false;
+          this.passcodeError = null;
           this.room = msg.room;
           this.chat = msg.chat;
           this.avatars.clear();
@@ -162,11 +168,28 @@ class RealtimeRoomStore {
         case 'AVATAR_STATE': {
           const existing = this.avatars.get(msg.avatar.userId);
           if (existing) {
-            existing.targetPosition = [...msg.avatar.position];
-            existing.targetRotationY = msg.avatar.rotationY;
-            existing.animation = msg.avatar.animation;
+            const isLocal = msg.avatar.userId === this.lastConnectParams?.userId;
+            const isLocalEchoResetFromDance =
+              isLocal &&
+              msg.avatar.animation === 'STAND' &&
+              (existing.animation === 'DANCE' ||
+                existing.animation === 'DANCE_2' ||
+                existing.animation === 'DANCE_3' ||
+                existing.animation === 'DANCE_4' ||
+                existing.animation === 'DANCE_5' ||
+                performance.now() < this.ignoreNextLeaveSeatEchoUntil);
+            const localAnimChanged =
+              isLocal && !isLocalEchoResetFromDance && existing.animation !== msg.avatar.animation;
+            if (!isLocalEchoResetFromDance) {
+              existing.targetPosition = [...msg.avatar.position];
+              existing.targetRotationY = msg.avatar.rotationY;
+              existing.animation = msg.avatar.animation;
+            }
             existing.seatId = msg.avatar.seatId;
             existing.seq = msg.avatar.seq;
+            if (localAnimChanged) {
+              this.emit();
+            }
           } else {
             this.avatars.set(msg.avatar.userId, {
               ...msg.avatar,
@@ -242,6 +265,14 @@ class RealtimeRoomStore {
 
         case 'SONG_ENDED_APPLAUSE': {
           this.applauseUntil = performance.now() + 4000;
+          if (typeof msg.karaokeScore === 'number') {
+            const currentTitle = this.room?.concert.setlist[this.room.concert.currentSetlistIndex]?.title;
+            this.lastKaraokeScore = {
+              score: msg.karaokeScore,
+              until: performance.now() + 5500,
+              trackTitle: currentTitle,
+            };
+          }
           for (const av of this.avatars.values()) {
             if (av.role !== 'ARTIST') av.animation = 'CLAP';
           }
@@ -268,6 +299,13 @@ class RealtimeRoomStore {
                   : msg.event.instrument === 'DRUMS'
                     ? 'PLAY_DRUMS'
                     : 'PLAY_PIANO';
+          }
+          if (msg.event.userId !== this.lastConnectParams?.userId) {
+            if (msg.event.isNoteOn) {
+              audioEngine.playInstrumentNoteOn(msg.event.instrument, msg.event.note, msg.event.velocity);
+            } else {
+              audioEngine.playInstrumentNoteOff(msg.event.instrument, msg.event.note);
+            }
           }
           break;
         }
@@ -296,12 +334,19 @@ class RealtimeRoomStore {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       this.connected = false;
       this.pingMs = null;
       if (this.pingTimer !== null) {
         clearInterval(this.pingTimer);
         this.pingTimer = null;
+      }
+      if (ev.code === 4006) {
+        this.passcodeRequired = true;
+        this.passcodeError = 'Phòng yêu cầu mật khẩu hoặc mật khẩu chưa đúng.';
+        this.reconnecting = false;
+        this.emit();
+        return;
       }
       if (!this.manualDisconnect && this.lastConnectParams && this.reconnectAttempt < 5) {
         this.reconnecting = true;
@@ -326,6 +371,12 @@ class RealtimeRoomStore {
       if (this.lastConnectParams) {
         const localAv = this.avatars.get(this.lastConnectParams.userId);
         if (localAv) {
+          const wasDancing =
+            localAv.animation === 'DANCE' ||
+            localAv.animation === 'DANCE_2' ||
+            localAv.animation === 'DANCE_3' ||
+            localAv.animation === 'DANCE_4' ||
+            localAv.animation === 'DANCE_5';
           const now = performance.now();
           localAv.lastReaction = msg.reaction;
           localAv.reactionUntil = now + 2500;
@@ -334,7 +385,46 @@ class RealtimeRoomStore {
             localAv.flowerBurstAt = now;
             localAv.flowerBurstUntil = now + 2400;
           }
+          if (
+            wasDancing &&
+            msg.reaction !== 'DANCE' &&
+            msg.reaction !== 'DANCE_2' &&
+            msg.reaction !== 'DANCE_3' &&
+            msg.reaction !== 'DANCE_4' &&
+            msg.reaction !== 'DANCE_5'
+          ) {
+            this.emit();
+          }
         }
+      }
+    }
+    if (msg.type === 'OCCUPY_SEAT' && this.lastConnectParams && this.room) {
+      const userId = this.lastConnectParams.userId;
+      const seat = this.room.seats.find((s) => s.id === msg.seatId);
+      const localAv = this.avatars.get(userId);
+      if (seat && (seat.state === 'AVAILABLE' || seat.occupiedByUserId === userId || seat.heldByUserId === userId)) {
+        for (const s of this.room.seats) {
+          if (s.occupiedByUserId === userId && s.id !== seat.id) {
+            s.occupiedByUserId = undefined;
+            if (s.state === 'OCCUPIED') s.state = 'AVAILABLE';
+          }
+        }
+        seat.state = 'OCCUPIED';
+        seat.occupiedByUserId = userId;
+        if (localAv) {
+          localAv.seatId = seat.id;
+          localAv.targetPosition = [...seat.position];
+          localAv.targetRotationY =
+            this.room.venueStyle === 'KARAOKE'
+              ? seat.row === 'L'
+                ? Math.PI * 0.65
+                : seat.row === 'R'
+                  ? -Math.PI * 0.65
+                  : Math.PI
+              : Math.PI;
+          localAv.animation = 'SIT';
+        }
+        this.emit();
       }
     }
     if (msg.type === 'LEAVE_SEAT' && this.lastConnectParams) {
@@ -362,6 +452,124 @@ class RealtimeRoomStore {
   sendMove(position: [number, number, number], rotationY: number, animation: AvatarAnimationState) {
     this.seq += 1;
     this.send({ type: 'AVATAR_MOVE', position, rotationY, animation, seq: this.seq });
+  }
+
+  notifyUiSync() {
+    this.emit();
+  }
+
+  updateLocalAvatarPreset(presetId: AvatarPresetId) {
+    if (this.lastConnectParams) {
+      this.lastConnectParams.avatarPresetId = presetId;
+      const localAv = this.avatars.get(this.lastConnectParams.userId);
+      if (localAv) {
+        localAv.avatarPresetId = presetId;
+        this.emit();
+      }
+    }
+  }
+
+  /**
+   * Toggles continuous full-body Dance ('DANCE' = Samba, 'DANCE_2' = Arms Hip Hop, 'DANCE_3' = Northern Soul Spin, 'DANCE_4' = Samba 2, 'DANCE_5' = YMCA) for audience/guests.
+   * If seated, releases the seat on the server and steps out into an open aisle/floor spot.
+   * Returns true if dancing started or switched, false if toggled off back to IDLE.
+   */
+  toggleDanceEmote(danceAnim: 'DANCE' | 'DANCE_2' | 'DANCE_3' | 'DANCE_4' | 'DANCE_5' = 'DANCE'): boolean {
+    const userId = this.lastConnectParams?.userId;
+    const localAv = userId ? this.avatars.get(userId) : undefined;
+    if (!localAv) {
+      this.send({ type: 'REACTION_SEND', reaction: danceAnim });
+      return true;
+    }
+
+    if (localAv.animation === danceAnim) {
+      localAv.animation = 'IDLE';
+      localAv.lastReaction = undefined;
+      localAv.reactionUntil = 0;
+      this.sendMove(localAv.targetPosition, localAv.targetRotationY, 'IDLE');
+      this.emit();
+      return false;
+    }
+
+    if (localAv.seatId) {
+      const [curX, , curZ] = localAv.targetPosition;
+      const isKaraoke = this.room?.venueStyle === 'KARAOKE';
+      const dancePos: [number, number, number] = isKaraoke
+        ? [
+            Math.max(-1.6, Math.min(1.6, Number((curX * 0.45).toFixed(2)))),
+            0,
+            Math.max(2.8, Math.min(5.0, Number(curZ.toFixed(2)))),
+          ]
+        : [
+            curX >= 0 ? 0.35 : -0.35,
+            0,
+            Math.max(1.4, Math.min(4.1, Number(curZ.toFixed(2)))),
+          ];
+      this.ignoreNextLeaveSeatEchoUntil = performance.now() + 800;
+      this.send({ type: 'LEAVE_SEAT' });
+      localAv.targetPosition = dancePos;
+      localAv.targetRotationY = Math.PI;
+      localAv.animation = danceAnim;
+      this.sendMove(dancePos, Math.PI, danceAnim);
+    } else {
+      localAv.animation = danceAnim;
+      this.sendMove(localAv.targetPosition, localAv.targetRotationY, danceAnim);
+    }
+
+    this.send({ type: 'REACTION_SEND', reaction: danceAnim });
+    this.emit();
+    return true;
+  }
+
+  /**
+   * Moves the local avatar onto the Karaoke stage mic podium (slot 0 = left mic, slot 1 = right mic)
+   * facing down from the stage toward the audience & opposite-wall lyrics screen (rotationY = 0).
+   */
+  stepOntoKaraokeStageMic(slot: 0 | 1) {
+    const userId = this.lastConnectParams?.userId;
+    const localAv = userId ? this.avatars.get(userId) : undefined;
+    const stageX = slot === 0 ? -0.85 : 0.85;
+    const stagePos: [number, number, number] = [stageX, 0.44, -1.55];
+
+    if (localAv) {
+      if (localAv.seatId) {
+        this.ignoreNextLeaveSeatEchoUntil = performance.now() + 800;
+        this.send({ type: 'LEAVE_SEAT' });
+        localAv.seatId = undefined;
+      }
+      localAv.targetPosition = stagePos;
+      localAv.targetRotationY = 0; // Face +Z (looking down from stage toward audience & rear lyrics monitor)
+      localAv.animation = 'IDLE';
+      this.sendMove(stagePos, 0, 'IDLE');
+      this.emit();
+    } else {
+      this.sendMove(stagePos, 0, 'IDLE');
+    }
+  }
+
+  /**
+   * Moves the local avatar onto the Chamber/Opera stage at the Steinway Grand Piano bench
+   * facing the piano keyboard (position [-1.4, 0.44, -1.05], rotationY = Math.PI).
+   */
+  stepOntoChamberStagePiano() {
+    const userId = this.lastConnectParams?.userId;
+    const localAv = userId ? this.avatars.get(userId) : undefined;
+    const pianoPos: [number, number, number] = [-1.4, 0.44, -1.05];
+
+    if (localAv) {
+      if (localAv.seatId) {
+        this.ignoreNextLeaveSeatEchoUntil = performance.now() + 800;
+        this.send({ type: 'LEAVE_SEAT' });
+        localAv.seatId = undefined;
+      }
+      localAv.targetPosition = pianoPos;
+      localAv.targetRotationY = Math.PI;
+      localAv.animation = 'PLAY_PIANO';
+      this.sendMove(pianoPos, Math.PI, 'PLAY_PIANO');
+      this.emit();
+    } else {
+      this.sendMove(pianoPos, Math.PI, 'PLAY_PIANO');
+    }
   }
 
   sendMidi(event: MidiNoteEventPayload) {

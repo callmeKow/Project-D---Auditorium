@@ -75,18 +75,42 @@ export function DualDeckMixer({
   onSelectQueuedIndex,
   deckAVolume,
   onDeckAVolumeChange,
-}: DualDeckMixerProps) {
+  onTransitionVisualChange,
+}: DualDeckMixerProps & {
+  onTransitionVisualChange?: (state: {
+    active: boolean;
+    phase: 'PREWARM' | 'CROSSFADE';
+    progressPct: number;
+    elapsedSec: number;
+    totalSec: number;
+    targetVideoId?: string;
+    targetTitle?: string;
+    oldScreenOpacity: number;
+    newScreenOpacity: number;
+  } | null) => void;
+}) {
   const initialAudio = audioEngine.getCaptureSettings();
 
   const [crossfader, setCrossfader] = useState(0); // 0 = Deck A, 100 = Deck B
   const [deckBVolume, setDeckBVolume] = useState(0);
   const [micGain, setMicGain] = useState(initialAudio.inputGain);
-  const [fadeTimeSec, setFadeTimeSec] = useState(3);
+  const [fadeTimeSec, setFadeTimeSec] = useState(5);
   const [echoTailMix, setEchoTailMix] = useState(initialAudio.stageEchoEnabled ? initialAudio.stageEchoMix : 0);
   const [cuePlaying, setCuePlaying] = useState(false);
   const [cueReady, setCueReady] = useState(false);
   const [isAutoMixing, setIsAutoMixing] = useState(false);
   const [mixProgressPct, setMixProgressPct] = useState(0);
+  const [transitionVisual, setTransitionVisual] = useState<{
+    active: boolean;
+    phase: 'PREWARM' | 'CROSSFADE';
+    progressPct: number;
+    elapsedSec: number;
+    totalSec: number;
+    targetVideoId?: string;
+    targetTitle?: string;
+    oldScreenOpacity: number;
+    newScreenOpacity: number;
+  } | null>(null);
 
   const cueIframeRef = useRef<HTMLIFrameElement | null>(null);
   const autoMixTimerRef = useRef<number | null>(null);
@@ -180,6 +204,13 @@ export function DualDeckMixer({
     sendCueYtCmd(iframe, 'playVideo');
   }, [deckBVolume, cuePlaying]);
 
+  useEffect(() => {
+    if (!isAutoMixing && crossfader === 0 && transitionVisual !== null) {
+      setTransitionVisual(null);
+      onTransitionVisualChange?.(null);
+    }
+  }, [isAutoMixing, crossfader, transitionVisual, onTransitionVisualChange]);
+
   const applyCrossfadeCurve = (xf: number) => {
     const clamped = Math.max(0, Math.min(100, xf));
     setCrossfader(clamped);
@@ -188,6 +219,27 @@ export function DualDeckMixer({
     const nextB = Math.round(100 * Math.sin(t * Math.PI * 0.5));
     onDeckAVolumeChange(nextA);
     setDeckBVolume(nextB);
+
+    if (!isAutoMixingRef.current) {
+      if (clamped <= 0) {
+        setTransitionVisual(null);
+        onTransitionVisualChange?.(null);
+      } else {
+        const nextVisual = {
+          active: true,
+          phase: (clamped < 60 ? 'PREWARM' : 'CROSSFADE') as 'PREWARM' | 'CROSSFADE',
+          progressPct: Math.round(clamped),
+          elapsedSec: Number(((clamped / 100) * fadeTimeSec).toFixed(1)),
+          totalSec: fadeTimeSec,
+          targetVideoId: deckBVideoId,
+          targetTitle: deckBTrack?.title,
+          oldScreenOpacity: Number(Math.cos(t * Math.PI * 0.5).toFixed(3)),
+          newScreenOpacity: Number(Math.sin(t * Math.PI * 0.5).toFixed(3)),
+        };
+        setTransitionVisual(nextVisual);
+        onTransitionVisualChange?.(nextVisual);
+      }
+    }
   };
 
   const handleToggleCuePreview = () => {
@@ -236,16 +288,86 @@ export function DualDeckMixer({
       setCuePlaying(true);
     }
 
-    const durationMs = Math.max(1000, fadeTimeSec * 1000);
+    const durationMs = Math.max(2000, fadeTimeSec * 1000);
+    // 5s default transition: first 3s (60%) pre-warms Deck B at low volume, then 3s..5s (last 40%) ramps Deck B up & Deck A down
+    const preWarmSplitRatio = fadeTimeSec === 5 ? 3 / 5 : 0.6;
     const startMs = performance.now();
+
+    // Immediately at t=0s: start Deck B quietly (~12%) while Deck A remains at 100%
+    onDeckAVolumeChange(100);
+    setDeckBVolume(12);
+    setCrossfader(5);
+    const initialVisual = {
+      active: true,
+      phase: 'PREWARM' as const,
+      progressPct: 0,
+      elapsedSec: 0,
+      totalSec: fadeTimeSec,
+      targetVideoId: deckBVideoId,
+      targetTitle: deckBTrack?.title,
+      oldScreenOpacity: 1,
+      newScreenOpacity: 0.05,
+    };
+    setTransitionVisual(initialVisual);
+    onTransitionVisualChange?.(initialVisual);
 
     autoMixTimerRef.current = window.setInterval(() => {
       const elapsed = performance.now() - startMs;
       const ratio = Math.min(1, elapsed / durationMs);
-      setMixProgressPct(Math.round(ratio * 100));
-      applyCrossfadeCurve(ratio * 100);
+      const pct = Math.round(ratio * 100);
+      setMixProgressPct(pct);
+
+      let nextA = 100;
+      let nextB = 12;
+      let nextXf = pct;
+      let oldOpacity = 1;
+      let newOpacity = 0;
+      let phase: 'PREWARM' | 'CROSSFADE' = 'PREWARM';
+
+      if (ratio < preWarmSplitRatio) {
+        // Phase 1 (0s -> 3s): Deck B is loaded & playing softly in background (12% -> 18%), Deck A holds strong (100% -> 92%)
+        // Screen of old track begins darkening gently (1.00 -> 0.65), new track screen emerges dimly (0.05 -> 0.30)
+        const p1 = Math.max(0, Math.min(1, ratio / preWarmSplitRatio));
+        phase = 'PREWARM';
+        nextA = Math.round(100 - 8 * p1);
+        nextB = Math.round(12 + 6 * p1);
+        nextXf = Math.round(5 + 25 * p1);
+        oldOpacity = Number((1 - 0.35 * p1).toFixed(3));
+        newOpacity = Number((0.05 + 0.25 * p1).toFixed(3));
+      } else {
+        // Phase 2 (3s -> 5s): Deck B volume swells smoothly (18% -> 100%) and Deck A fades out (92% -> 0%)
+        // Old track screen darkens completely to 0, while new track screen brightens clearly to 1.0
+        const p2 = Math.max(0, Math.min(1, (ratio - preWarmSplitRatio) / (1 - preWarmSplitRatio)));
+        const smooth = 0.5 - 0.5 * Math.cos(p2 * Math.PI);
+        phase = 'CROSSFADE';
+        nextA = Math.round(92 * (1 - smooth));
+        nextB = Math.round(18 + 82 * smooth);
+        nextXf = Math.round(30 + 70 * smooth);
+        oldOpacity = Number((0.65 * (1 - smooth)).toFixed(3));
+        newOpacity = Number((0.30 + 0.70 * smooth).toFixed(3));
+      }
+
+      setCrossfader(nextXf);
+      onDeckAVolumeChange(nextA);
+      setDeckBVolume(nextB);
+
+      const stepVisual = {
+        active: true,
+        phase,
+        progressPct: pct,
+        elapsedSec: Number((Math.min(durationMs, elapsed) / 1000).toFixed(1)),
+        totalSec: fadeTimeSec,
+        targetVideoId: deckBVideoId,
+        targetTitle: deckBTrack?.title,
+        oldScreenOpacity: oldOpacity,
+        newScreenOpacity: newOpacity,
+      };
+      setTransitionVisual(stepVisual);
+      onTransitionVisualChange?.(stepVisual);
 
       if (ratio >= 1) {
+        setTransitionVisual(null);
+        onTransitionVisualChange?.(null);
         finishSwitchToDeckB();
       }
     }, 60);
@@ -445,11 +567,17 @@ export function DualDeckMixer({
       {/* Crossfader Bridge + Auto-Mix Transition Trigger */}
       <div className="mt-3 rounded-xl border border-stone-800 bg-stone-900/85 p-2.5">
         <div className="flex items-center justify-between text-[10px] font-semibold text-stone-400">
-          <span className="text-amber-300">Deck A ({deckAVolume}%)</span>
+          <span className="text-amber-300">
+            Deck A ({deckAVolume}%)
+            {transitionVisual?.active ? ` • Màn hình ${Math.round(transitionVisual.oldScreenOpacity * 100)}%` : ''}
+          </span>
           <span className="inline-flex items-center gap-1 text-stone-300">
             <SlidersHorizontal className="h-3 w-3" /> Crossfader
           </span>
-          <span className="text-sky-300">Deck B ({deckBVolume}%)</span>
+          <span className="text-sky-300">
+            Deck B ({deckBVolume}%)
+            {transitionVisual?.active ? ` • Màn hình ${Math.round(transitionVisual.newScreenOpacity * 100)}%` : ''}
+          </span>
         </div>
         <input
           type="range"
@@ -461,6 +589,29 @@ export function DualDeckMixer({
           className="mt-1 w-full accent-amber-400"
         />
 
+        {transitionVisual?.active && (
+          <div className="mt-1.5 rounded-lg border border-stone-700/80 bg-stone-950/85 px-2.5 py-1.5 text-[10px]">
+            <div className="flex items-center justify-between font-semibold">
+              <span className={transitionVisual.phase === 'PREWARM' ? 'text-amber-300' : 'text-sky-300'}>
+                {transitionVisual.phase === 'PREWARM'
+                  ? `Giai đoạn 1 (${transitionVisual.elapsedSec}s/${transitionVisual.totalSec}s): Nạp & mở nhỏ bài mới`
+                  : `Giai đoạn 2 (${transitionVisual.elapsedSec}s/${transitionVisual.totalSec}s): Tăng âm bài mới & giảm bài cũ`}
+              </span>
+              <span className="text-stone-400">{transitionVisual.progressPct}%</span>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-2 text-[9px] text-stone-400">
+              <div className="flex items-center justify-between rounded bg-stone-900 px-1.5 py-0.5">
+                <span>Màn hình bài cũ (Tối dần)</span>
+                <span className="font-bold text-amber-300">{Math.round(transitionVisual.oldScreenOpacity * 100)}%</span>
+              </div>
+              <div className="flex items-center justify-between rounded bg-stone-900 px-1.5 py-0.5">
+                <span>Màn hình bài mới (Rõ dần)</span>
+                <span className="font-bold text-sky-300">{Math.round(transitionVisual.newScreenOpacity * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
           {isAutoMixing ? (
             <button
@@ -469,7 +620,7 @@ export function DualDeckMixer({
               className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-red-600 px-3 py-1.5 text-xs font-bold text-white transition hover:bg-red-500"
             >
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              Đang chuyển bài mượt ({mixProgressPct}%) — Hủy
+              Đang chuyển bài mượt ({transitionVisual?.elapsedSec ?? 0}s/{fadeTimeSec}s • {mixProgressPct}%) — Hủy
             </button>
           ) : (
             <button

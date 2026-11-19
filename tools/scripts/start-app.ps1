@@ -10,17 +10,20 @@ if ((Test-Path $NodeDir) -and ($env:PATH -notlike "*$NodeDir*")) {
 }
 
 function Test-PortOpen([int]$Port) {
-  try {
-    $client = New-Object System.Net.Sockets.TcpClient
-    $iar = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
-    $ok = $iar.AsyncWaitHandle.WaitOne(250, $false)
-    if ($ok) {
-      $client.EndConnect($iar)
+  foreach ($addr in @('127.0.0.1', '::1')) {
+    try {
+      $family = if ($addr -eq '::1') { [System.Net.Sockets.AddressFamily]::InterNetworkV6 } else { [System.Net.Sockets.AddressFamily]::InterNetwork }
+      $client = New-Object System.Net.Sockets.TcpClient($family)
+      $iar = $client.BeginConnect($addr, $Port, $null, $null)
+      $ok = $iar.AsyncWaitHandle.WaitOne(250, $false)
+      if ($ok) {
+        $client.EndConnect($iar)
+        $client.Close()
+        return $true
+      }
       $client.Close()
-      return $true
-    }
-    $client.Close()
-  } catch {}
+    } catch {}
+  }
   return $false
 }
 
@@ -51,22 +54,33 @@ if (-not (Test-Path 'node_modules')) {
   & npm.cmd ci
 }
 
-Start-Job -ScriptBlock {
-  for ($i = 0; $i -lt 50; $i++) {
-    try {
-      $c = New-Object System.Net.Sockets.TcpClient
-      $iar = $c.BeginConnect('127.0.0.1', 5173, $null, $null)
-      if ($iar.AsyncWaitHandle.WaitOne(250, $false)) {
-        $c.EndConnect($iar)
+# Wait in an in-process background runspace so Start-Process runs in the interactive desktop session
+$ps = [powershell]::Create().AddScript({
+  for ($i = 0; $i -lt 150; $i++) {
+    $ready = $false
+    foreach ($addr in @('127.0.0.1', '::1')) {
+      try {
+        $family = if ($addr -eq '::1') { [System.Net.Sockets.AddressFamily]::InterNetworkV6 } else { [System.Net.Sockets.AddressFamily]::InterNetwork }
+        $c = New-Object System.Net.Sockets.TcpClient($family)
+        $iar = $c.BeginConnect($addr, 5173, $null, $null)
+        if ($iar.AsyncWaitHandle.WaitOne(250, $false)) {
+          $c.EndConnect($iar)
+          $c.Close()
+          $ready = $true
+          break
+        }
         $c.Close()
-        Start-Process 'http://localhost:5173/'
-        break
-      }
-      $c.Close()
-    } catch {}
+      } catch {}
+    }
+    if ($ready) {
+      Start-Sleep -Milliseconds 300
+      Start-Process 'http://localhost:5173/'
+      break
+    }
     Start-Sleep -Milliseconds 400
   }
-} | Out-Null
+})
+$null = $ps.BeginInvoke()
 
 Write-Host '[VMW] Dang khoi dong Virtual Music World...' -ForegroundColor Cyan
 Write-Host '      Web: http://localhost:5173/   |   API: http://localhost:4000' -ForegroundColor Green

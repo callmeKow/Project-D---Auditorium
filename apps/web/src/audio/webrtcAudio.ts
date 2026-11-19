@@ -20,6 +20,25 @@ const ICE_SERVERS: RTCConfiguration = {
 };
 
 /**
+ * Tunes Opus SDP parameters for low-latency (10ms ptime) and crisp 48kHz vocal clarity (128kbps).
+ */
+function tuneOpusSdp(sdp?: string): string | undefined {
+  if (!sdp) return sdp;
+  const match = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000\/2/i);
+  if (!match) return sdp;
+  const pt = match[1];
+  const desiredParams = 'minptime=10;ptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;maxplaybackrate=48000;sprop-maxcapturerate=48000';
+  const fmtpRegex = new RegExp(`(a=fmtp:${pt}\\s+)([^\\r\\n]+)`, 'i');
+  if (fmtpRegex.test(sdp)) {
+    return sdp.replace(fmtpRegex, `$1${desiredParams}`);
+  }
+  return sdp.replace(
+    new RegExp(`(a=rtpmap:${pt}\\s+opus\\/48000\\/2\\r?\\n)`, 'i'),
+    `$1a=fmtp:${pt} ${desiredParams}\r\n`
+  );
+}
+
+/**
  * Isolated WebRTC 1-to-many live audio transport for Small Room (10-20 capacity).
  * Kept outside React global state per AGENTS.md Section 4 (Audio Isolation).
  */
@@ -177,6 +196,15 @@ class WebRtcAudioTransport {
     pc.ontrack = (ev) => {
       const [remoteStream] = ev.streams;
       if (!remoteStream) return;
+      // Minimize jitter-buffer playout delay to ~20ms in Chromium for tighter live sync
+      const rx = ev.receiver as unknown as { playoutDelayHint?: number };
+      if (rx && typeof rx === 'object') {
+        try {
+          rx.playoutDelayHint = 0.02;
+        } catch {
+          // Ignore if unsupported by browser
+        }
+      }
       let audio = this.audioElements.get(remoteUserId);
       if (!audio) {
         audio = new Audio();
@@ -219,7 +247,11 @@ class WebRtcAudioTransport {
     for (const track of this.localStream.getAudioTracks()) {
       pc.addTrack(track, this.localStream);
     }
-    const offer = await pc.createOffer();
+    const rawOffer = await pc.createOffer();
+    const offer: RTCSessionDescriptionInit = {
+      type: rawOffer.type,
+      sdp: tuneOpusSdp(rawOffer.sdp),
+    };
     await pc.setLocalDescription(offer);
     realtimeStore.send({
       type: 'WEBRTC_SIGNAL',
@@ -234,7 +266,11 @@ class WebRtcAudioTransport {
     if (signal.kind === 'offer') {
       const pc = this.createPeerConnection(fromUserId, channel);
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
-      const answer = await pc.createAnswer();
+      const rawAnswer = await pc.createAnswer();
+      const answer: RTCSessionDescriptionInit = {
+        type: rawAnswer.type,
+        sdp: tuneOpusSdp(rawAnswer.sdp),
+      };
       await pc.setLocalDescription(answer);
       realtimeStore.send({
         type: 'WEBRTC_SIGNAL',

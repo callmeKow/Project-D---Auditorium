@@ -8,6 +8,7 @@
     "apps/*"
   ],
   "scripts": {
+    "start": "node tools/scripts/dev.mjs",
     "dev": "node tools/scripts/dev.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

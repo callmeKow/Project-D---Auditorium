@@ -1,16 +1,9 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, Trash2, ShieldCheck, Sparkles } from 'lucide-react';
-import type { AvatarPresetId } from '@vmw/contracts';
 import { apiClient } from '../api/client';
 import { useAuth } from '../state/authStore';
-
-const AVATAR_PRESETS: { id: AvatarPresetId; name: string; body: string; accent: string }[] = [
-  { id: 'chibi-classic', name: 'Chibi Classic', body: '#1e293b', accent: '#f59e0b' },
-  { id: 'chibi-acoustic', name: 'Chibi Acoustic', body: '#78350f', accent: '#fbbf24' },
-  { id: 'chibi-synth', name: 'Chibi Synth', body: '#312e81', accent: '#38bdf8' },
-  { id: 'chibi-strings', name: 'Chibi Strings', body: '#7f1d1d', accent: '#fda4af' },
-];
+import { CHIBI_PRESET_CATALOG, ChibiPresetAvatarSvg } from '../components/ChibiPresetPreview';
 
 export function ProfilePage() {
   const { user, token, updateAvatar, logout } = useAuth();
@@ -64,26 +57,43 @@ export function ProfilePage() {
           </div>
 
           <h2 className="mt-6 flex items-center gap-1.5 text-sm font-bold text-white">
-            <Sparkles className="h-4 w-4 text-amber-400" /> Chibi Avatar Preset
+            <Sparkles className="h-4 w-4 text-amber-400" /> Chọn Outfit Chibi Mặc Định (2 Nam • 2 Nữ)
           </h2>
-          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {AVATAR_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => updateAvatar(p.id)}
-                className={`flex flex-col items-start rounded-xl border p-3 text-left transition ${
-                  user.avatarPresetId === p.id
-                    ? 'border-amber-400 bg-amber-500/10'
-                    : 'border-stone-800 bg-stone-950 hover:border-stone-700'
-                }`}
-              >
-                <div className="flex gap-1.5">
-                  <span className="h-4 w-4 rounded-full" style={{ backgroundColor: p.body }} />
-                  <span className="h-4 w-4 rounded-full" style={{ backgroundColor: p.accent }} />
-                </div>
-                <span className="mt-2 text-xs font-semibold text-stone-100">{p.name}</span>
-              </button>
-            ))}
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            {CHIBI_PRESET_CATALOG.map((p) => {
+              const selected = user.avatarPresetId === p.id;
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => updateAvatar(p.id)}
+                  className={`flex flex-col items-center rounded-2xl border p-3.5 text-center transition ${
+                    selected
+                      ? 'border-amber-400 bg-amber-500/15 ring-1 ring-amber-400/50'
+                      : 'border-stone-800 bg-stone-950 hover:border-stone-700'
+                  }`}
+                >
+                  <div className="flex w-full items-center justify-between">
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                        p.gender === 'NAM'
+                          ? 'bg-sky-500/20 text-sky-300 border border-sky-500/30'
+                          : 'bg-pink-500/20 text-pink-300 border border-pink-500/30'
+                      }`}
+                    >
+                      {p.genderLabel}
+                    </span>
+                    <div className="flex gap-1">
+                      <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: p.body }} />
+                      <span className="h-3.5 w-3.5 rounded-full border border-white/20" style={{ backgroundColor: p.accent }} />
+                    </div>
+                  </div>
+                  <ChibiPresetAvatarSvg presetId={p.id} className="my-1.5 h-24 w-24" />
+                  <span className="text-xs font-bold text-white">{p.name}</span>
+                  <span className="mt-0.5 text-[11px] font-semibold text-amber-300">{p.outfitTitle}</span>
+                  <span className="mt-1 text-[10px] leading-snug text-stone-400">{p.desc}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 

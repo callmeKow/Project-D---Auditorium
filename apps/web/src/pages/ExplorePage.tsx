@@ -1,9 +1,24 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Calendar, LayoutGrid, Search, Users, Mic2, Radio, Sparkles, Clock } from 'lucide-react';
-import type { RoomDTO } from '@vmw/contracts';
+import { Calendar, LayoutGrid, Search, Users, Mic2, Radio, Sparkles, Clock, Lock } from 'lucide-react';
+import type { RoomDTO, VenueStyle } from '@vmw/contracts';
 import { apiClient } from '../api/client';
 import { ConcertCalendarView } from '../components/explore/ConcertCalendarView';
+
+const VENUE_STYLE_META: Record<VenueStyle, { label: string; badgeClass: string }> = {
+  CHAMBER: {
+    label: '🎻 Thính phòng',
+    badgeClass: 'bg-amber-500/10 text-amber-300 border border-amber-500/25',
+  },
+  CONCERT: {
+    label: '🎆 Concert Beat-Sync',
+    badgeClass: 'bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30',
+  },
+  KARAOKE: {
+    label: '🎤 Karaoke',
+    badgeClass: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30',
+  },
+};
 
 const STATE_BADGE: Record<string, string> = {
   LIVE: 'bg-red-500/15 text-red-300 border-red-500/30',
@@ -18,6 +33,7 @@ export function ExplorePage() {
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [formatFilter, setFormatFilter] = useState<string>('ALL');
+  const [venueFilter, setVenueFilter] = useState<'ALL' | VenueStyle>('ALL');
   const [view, setView] = useState<'list' | 'calendar'>('list');
 
   useEffect(() => {
@@ -35,7 +51,8 @@ export function ExplorePage() {
       r.concert.genre.toLowerCase().includes(query.toLowerCase()) ||
       r.code.toLowerCase().includes(query.toLowerCase());
     const matchesFormat = formatFilter === 'ALL' || r.concert.format === formatFilter;
-    return matchesQuery && matchesFormat;
+    const matchesVenue = venueFilter === 'ALL' || r.venueStyle === venueFilter;
+    return matchesQuery && matchesFormat && matchesVenue;
   });
 
   return (
@@ -91,6 +108,31 @@ export function ExplorePage() {
         </div>
       </div>
 
+      {/* 3 Room Type Filter Tabs */}
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        {(
+          [
+            { id: 'ALL', label: '✨ Tất cả phòng' },
+            { id: 'CHAMBER', label: '🎻 Thính phòng' },
+            { id: 'CONCERT', label: '🎆 Concert' },
+            { id: 'KARAOKE', label: '🎤 Phòng Karaoke' },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setVenueFilter(tab.id)}
+            className={`rounded-full border px-3.5 py-1.5 text-xs font-semibold transition ${
+              venueFilter === tab.id
+                ? 'border-amber-400 bg-amber-500/20 text-amber-200'
+                : 'border-stone-800 bg-stone-900/80 text-stone-400 hover:border-stone-700 hover:text-stone-200'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       {loading ? (
         <div className="mt-8 grid gap-5 md:grid-cols-2">
           {[1, 2].map((i) => (
@@ -124,13 +166,16 @@ export function ExplorePage() {
                       </span>
                       <span
                         className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-                          room.venueStyle === 'CONCERT'
-                            ? 'bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30'
-                            : 'bg-amber-500/10 text-amber-300 border border-amber-500/25'
+                          (VENUE_STYLE_META[room.venueStyle] ?? VENUE_STYLE_META.CHAMBER).badgeClass
                         }`}
                       >
-                        {room.venueStyle === 'CONCERT' ? '🎆 Concert Beat-Sync' : '🎻 Thính phòng'}
+                        {(VENUE_STYLE_META[room.venueStyle] ?? VENUE_STYLE_META.CHAMBER).label}
                       </span>
+                      {room.hasPasscode && (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-stone-700 bg-stone-950 px-2 py-0.5 text-[10px] font-semibold text-amber-300">
+                          <Lock className="h-2.5 w-2.5" /> Mật khẩu
+                        </span>
+                      )}
                     </div>
                     <span className="rounded-md bg-stone-950 px-2 py-0.5 font-mono text-xs font-semibold text-stone-300">
                       {room.code}
@@ -149,10 +194,7 @@ export function ExplorePage() {
                   {currentSong && (
                     <div className="mt-3 rounded-xl border border-stone-800/80 bg-stone-950/70 px-3 py-2 text-xs text-stone-300">
                       <span className="text-stone-500">Now / Next:</span>{' '}
-                      <span className="font-medium text-stone-100">{currentSong.title}</span>{' '}
-                      <span className="ml-1 rounded bg-stone-800 px-1.5 py-0.5 text-[10px] text-amber-300">
-                        {currentSong.mode}
-                      </span>
+                      <span className="font-medium text-stone-100">{currentSong.title}</span>
                     </div>
                   )}
 

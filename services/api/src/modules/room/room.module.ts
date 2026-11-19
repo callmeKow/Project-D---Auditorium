@@ -1,25 +1,14 @@
 import crypto from 'node:crypto';
 import type { ConcertDTO, PerformanceFormat, RoomDTO, RoomState, VenueStyle } from '@vmw/contracts';
-import { createSmallRoomSeats } from '../seating/seating.module.js';
+import { createKaraokeLoungeSeats, createSmallRoomSeats } from '../seating/seating.module.js';
 import { loadSnapshot, saveSnapshot } from '../../infrastructure/persistence.js';
 
 const rooms = new Map<string, RoomDTO>();
 const roomPasscodes = new Map<string, string>(); // roomId -> passcode (never leaked in RoomDTO)
 const MAX_ACTIVE_ROOMS_PER_USER = 1; // TBD-03 PO Decision
 
-function seedInitialRooms() {
-  const snapshot = loadSnapshot();
-  if (snapshot?.rooms && Array.isArray(snapshot.rooms) && snapshot.rooms.length > 0) {
-    for (const r of snapshot.rooms as RoomDTO[]) {
-      r.memberCount = 0; // Reset live socket count on server boot
-      r.venueStyle = r.venueStyle ?? 'CHAMBER';
-      r.concert.invitedPerformerIds = r.concert.invitedPerformerIds ?? [];
-      rooms.set(r.id, r);
-    }
-    return;
-  }
-
-  const room1: RoomDTO = {
+function createSeededChamberRoom(): RoomDTO {
+  return {
     id: 'room-saigon-chamber',
     code: 'VMW-01',
     name: 'Saigon Warm Chamber Hall',
@@ -73,8 +62,10 @@ function seedInitialRooms() {
       ],
     },
   };
+}
 
-  const room2: RoomDTO = {
+function createSeededConcertRoom(): RoomDTO {
+  return {
     id: 'room-indie-jam',
     code: 'VMW-02',
     name: 'Hanoi Live Concert Arena',
@@ -112,62 +103,171 @@ function seedInitialRooms() {
       ],
     },
   };
+}
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(20, 0, 0, 0);
-
-  const room3: RoomDTO = {
-    id: 'room-dalat-strings',
-    code: 'VMW-03',
-    name: 'Dalat Pine Strings Salon',
+function createSeededKaraokeRoom(): RoomDTO {
+  return {
+    id: 'room-saigon-ktv',
+    code: 'VMW-04',
+    name: 'Saigon Neon Karaoke Lounge',
     roomType: 'SMALL_ROOM',
-    venueStyle: 'CHAMBER',
-    capacity: 18,
+    venueStyle: 'KARAOKE',
+    capacity: 12,
     state: 'OPEN',
     memberCount: 0,
-    seats: createSmallRoomSeats(18),
+    seats: createKaraokeLoungeSeats(12),
     concert: {
-      id: 'concert-dalat-strings',
-      roomId: 'room-dalat-strings',
-      title: 'Evening Violin & Chamber Quartet',
-      genre: 'Classical / Chamber',
-      format: 'ORCHESTRA',
+      id: 'concert-saigon-ktv',
+      roomId: 'room-saigon-ktv',
+      title: 'Hát Cho Nhau Nghe • Đêm Nhạc Tự Do Karaoke',
+      genre: 'Karaoke / Ballad / V-Pop',
+      format: 'DUO',
       hostUserId: 'user-artist-1',
-      performerName: 'Dalat Chamber Ensemble',
+      performerName: 'Cả Phòng Hát Tự Do',
       invitedPerformerIds: [],
-      scheduledAt: tomorrow.toISOString(),
-      state: 'SCHEDULED',
+      scheduledAt: new Date().toISOString(),
+      state: 'LIVE',
       currentSetlistIndex: 0,
-      isSpontaneous: false,
+      isSpontaneous: true,
+      trackPlaying: true,
+      trackStartedAtServerMs: Date.now(),
+      trackPausedAtSec: 0,
       setlist: [
         {
-          id: 'song-3-1',
-          title: 'Four Seasons — Autumn Movement I',
-          artistName: 'Dalat Chamber Ensemble',
-          durationSec: 270,
-          mode: 'LIVE',
-          lightingPreset: 'WARM_CHAMBER',
-        },
-        {
-          id: 'song-3-2',
-          title: 'Serenade for Strings',
-          artistName: 'Dalat Chamber Ensemble',
+          id: 'song-ktv-1',
+          title: 'Khúc Hát Mở Màn Karaoke (Tự thêm link YouTube ở tab Playlist)',
+          artistName: 'Mở Tự Do',
           durationSec: 240,
           mode: 'LIVE',
-          lightingPreset: 'SPOTLIGHT_SOLO',
+          lightingPreset: 'KTV_PARTY',
+        },
+        {
+          id: 'song-ktv-2',
+          title: 'Song Ca Acoustic Ballad (Thử Echo & Reverb)',
+          artistName: 'Mở Tự Do',
+          durationSec: 220,
+          mode: 'PRERECORDED',
+          lightingPreset: 'WARM_CHAMBER',
         },
       ],
     },
   };
+}
 
-  rooms.set(room1.id, room1);
-  rooms.set(room2.id, room2);
-  rooms.set(room3.id, room3);
+function seedInitialRooms() {
+  const snapshot = loadSnapshot();
+  if (snapshot?.passcodes && typeof snapshot.passcodes === 'object') {
+    for (const [rid, code] of Object.entries(snapshot.passcodes)) {
+      if (typeof code === 'string' && code.trim()) {
+        roomPasscodes.set(rid, code.trim());
+      }
+    }
+  }
+
+  let hydratedFromSnapshot = false;
+  if (snapshot?.rooms && Array.isArray(snapshot.rooms) && snapshot.rooms.length > 0) {
+    hydratedFromSnapshot = true;
+    for (const r of snapshot.rooms as RoomDTO[]) {
+      r.memberCount = 0; // Reset live socket count on server boot
+      r.venueStyle = r.venueStyle ?? 'CHAMBER';
+      r.hasPasscode = Boolean(roomPasscodes.has(r.id) || r.hasPasscode);
+      r.concert.invitedPerformerIds = r.concert.invitedPerformerIds ?? [];
+      if (r.id === 'room-saigon-ktv') {
+        r.name = r.name.replace(/\bKTV\b/g, 'Karaoke');
+        r.concert.title = r.concert.title.replace(/\bKTV\b/g, 'Karaoke');
+        for (const s of r.concert.setlist) {
+          s.title = s.title.replace(/\bKTV\b/g, 'Karaoke');
+        }
+      }
+      rooms.set(r.id, r);
+    }
+  }
+
+  let addedMissing = false;
+  if (!hydratedFromSnapshot) {
+    const room1 = createSeededChamberRoom();
+    const room2 = createSeededConcertRoom();
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(20, 0, 0, 0);
+
+    const room3: RoomDTO = {
+      id: 'room-dalat-strings',
+      code: 'VMW-03',
+      name: 'Dalat Pine Strings Salon',
+      roomType: 'SMALL_ROOM',
+      venueStyle: 'CHAMBER',
+      capacity: 18,
+      state: 'OPEN',
+      memberCount: 0,
+      seats: createSmallRoomSeats(18),
+      concert: {
+        id: 'concert-dalat-strings',
+        roomId: 'room-dalat-strings',
+        title: 'Evening Violin & Chamber Quartet',
+        genre: 'Classical / Chamber',
+        format: 'ORCHESTRA',
+        hostUserId: 'user-artist-1',
+        performerName: 'Dalat Chamber Ensemble',
+        invitedPerformerIds: [],
+        scheduledAt: tomorrow.toISOString(),
+        state: 'SCHEDULED',
+        currentSetlistIndex: 0,
+        isSpontaneous: false,
+        setlist: [
+          {
+            id: 'song-3-1',
+            title: 'Four Seasons — Autumn Movement I',
+            artistName: 'Dalat Chamber Ensemble',
+            durationSec: 270,
+            mode: 'LIVE',
+            lightingPreset: 'WARM_CHAMBER',
+          },
+          {
+            id: 'song-3-2',
+            title: 'Serenade for Strings',
+            artistName: 'Dalat Chamber Ensemble',
+            durationSec: 240,
+            mode: 'LIVE',
+            lightingPreset: 'SPOTLIGHT_SOLO',
+          },
+        ],
+      },
+    };
+
+    rooms.set(room1.id, room1);
+    rooms.set(room2.id, room2);
+    rooms.set(room3.id, room3);
+  }
+
+  const all = Array.from(rooms.values());
+  if (!all.some((r) => r.venueStyle === 'CHAMBER')) {
+    const r = createSeededChamberRoom();
+    rooms.set(r.id, r);
+    addedMissing = true;
+  }
+  if (!all.some((r) => r.venueStyle === 'CONCERT')) {
+    const r = createSeededConcertRoom();
+    rooms.set(r.id, r);
+    addedMissing = true;
+  }
+  if (!all.some((r) => r.venueStyle === 'KARAOKE')) {
+    const r = createSeededKaraokeRoom();
+    rooms.set(r.id, r);
+    addedMissing = true;
+  }
+
+  if (hydratedFromSnapshot && addedMissing) {
+    persistRooms();
+  }
 }
 
 export function persistRooms() {
-  saveSnapshot({ rooms: Array.from(rooms.values()) });
+  saveSnapshot({
+    rooms: Array.from(rooms.values()),
+    passcodes: Object.fromEntries(roomPasscodes.entries()),
+  });
 }
 
 seedInitialRooms();
@@ -228,31 +328,52 @@ export function createSmallRoom(params: {
   }
 
   const isPrivate = Boolean(params.isPrivate);
-  const maxCap = isPrivate ? 30 : 20; // TBD-02: Private Room 10-30, Small Room 10-20
-  const clampedCapacity = Math.min(maxCap, Math.max(10, params.capacity || 20));
+  const cleanPasscode = params.passcode?.trim() ?? '';
+  const hasPasscode = cleanPasscode.length > 0;
+  const venueStyle: VenueStyle =
+    params.venueStyle === 'CONCERT' ? 'CONCERT' : params.venueStyle === 'KARAOKE' ? 'KARAOKE' : 'CHAMBER';
+  const isKaraoke = venueStyle === 'KARAOKE';
+
+  const maxCap = isKaraoke ? 15 : isPrivate ? 30 : 20; // TBD-02: Private 10-30, Small Room 10-20, Karaoke 10-15
+  const clampedCapacity = Math.min(maxCap, Math.max(10, params.capacity || (isKaraoke ? 12 : 20)));
   const id = `room-${crypto.randomUUID().slice(0, 8)}`;
   const code = `VMW-${Math.floor(10 + Math.random() * 89)}`;
 
-  const venueStyle: VenueStyle = params.venueStyle === 'CONCERT' ? 'CONCERT' : 'CHAMBER';
-  const defaultLighting = venueStyle === 'CONCERT' ? 'DYNAMIC_CONCERT' : 'WARM_CHAMBER';
+  const defaultLighting =
+    venueStyle === 'CONCERT' ? 'DYNAMIC_CONCERT' : isKaraoke ? 'KTV_PARTY' : 'WARM_CHAMBER';
 
   const concert: ConcertDTO = {
     id: `concert-${crypto.randomUUID().slice(0, 8)}`,
     roomId: id,
-    title: params.concertTitle.trim() || (venueStyle === 'CONCERT' ? 'Live Concert Party' : 'Live Chamber Session'),
-    genre: params.genre.trim() || (venueStyle === 'CONCERT' ? 'Pop / Electronic' : 'Classical / Ballad'),
+    title:
+      params.concertTitle.trim() ||
+      (venueStyle === 'CONCERT'
+        ? 'Live Concert Party'
+        : isKaraoke
+          ? 'Hát Cho Nhau Nghe • Karaoke Tự Do'
+          : 'Live Chamber Session'),
+    genre:
+      params.genre.trim() ||
+      (venueStyle === 'CONCERT'
+        ? 'Pop / Electronic'
+        : isKaraoke
+          ? 'Karaoke / Ballad / V-Pop'
+          : 'Classical / Ballad'),
     format: params.format,
     hostUserId: params.hostUserId,
     performerName: params.performerName,
     invitedPerformerIds: [],
     scheduledAt: new Date().toISOString(),
-    state: 'PREPARING',
+    state: isKaraoke ? 'LIVE' : 'PREPARING',
     currentSetlistIndex: 0,
     isSpontaneous: params.isSpontaneous,
+    trackPlaying: isKaraoke,
+    trackStartedAtServerMs: isKaraoke ? Date.now() : undefined,
+    trackPausedAtSec: 0,
     setlist: [
       {
         id: `song-${crypto.randomUUID().slice(0, 6)}`,
-        title: 'Opening Piece (Live)',
+        title: isKaraoke ? 'Khúc Hát Mở Màn Karaoke (Tự chọn bài YouTube)' : 'Opening Piece (Live)',
         artistName: params.performerName,
         durationSec: 200,
         mode: 'LIVE',
@@ -264,19 +385,30 @@ export function createSmallRoom(params: {
   const room: RoomDTO = {
     id,
     code,
-    name: params.name.trim() || (isPrivate ? 'Private Auditorium' : venueStyle === 'CONCERT' ? 'Concert Stage' : 'Chamber Hall'),
+    name:
+      params.name.trim() ||
+      (isPrivate
+        ? isKaraoke
+          ? 'Private Karaoke Lounge'
+          : 'Private Auditorium'
+        : venueStyle === 'CONCERT'
+          ? 'Concert Stage'
+          : isKaraoke
+            ? 'Neon Karaoke Lounge'
+            : 'Chamber Hall'),
     roomType: isPrivate ? 'PRIVATE_ROOM' : 'SMALL_ROOM',
     venueStyle,
     capacity: clampedCapacity,
     isPrivate,
+    hasPasscode,
     state: 'OPEN',
     memberCount: 0,
-    seats: createSmallRoomSeats(clampedCapacity),
+    seats: isKaraoke ? createKaraokeLoungeSeats(clampedCapacity) : createSmallRoomSeats(clampedCapacity),
     concert,
   };
 
-  if (isPrivate && params.passcode?.trim()) {
-    roomPasscodes.set(room.id, params.passcode.trim());
+  if (hasPasscode) {
+    roomPasscodes.set(room.id, cleanPasscode);
   }
 
   rooms.set(room.id, room);

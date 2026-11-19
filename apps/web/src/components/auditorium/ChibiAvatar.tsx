@@ -1,40 +1,22 @@
 import { useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import type { AvatarPresetId } from '@vmw/contracts';
 import type { AvatarRuntimeEntry } from '../../realtime/realtimeStore';
+import { AvatarOverlay, lerpAngleY, syncReactionExpiry } from './AvatarOverlay';
 
 const PRESET_COLORS: Record<AvatarPresetId, { body: string; accent: string; hair: string }> = {
-  'chibi-classic': { body: '#1e293b', accent: '#f59e0b', hair: '#292524' },
-  'chibi-acoustic': { body: '#78350f', accent: '#fbbf24', hair: '#451a03' },
-  'chibi-synth': { body: '#312e81', accent: '#38bdf8', hair: '#0f172a' },
-  'chibi-strings': { body: '#7f1d1d', accent: '#fda4af', hair: '#1c1917' },
+  'chibi-classic': { body: '#355b82', accent: '#4f79ad', hair: '#9a6544' },
+  'chibi-acoustic': { body: '#f2b544', accent: '#fb7185', hair: '#e59a5c' },
+  'chibi-synth': { body: '#6d5bd0', accent: '#38bdf8', hair: '#b8a2f7' },
+  'chibi-strings': { body: '#2c3d6e', accent: '#e2425c', hair: '#3d2b33' },
 };
-
-// Pooled flower particle trajectories for upward seat toss burst (AGENTS.md: zero per-frame React allocs)
-const FLOWER_COLORS = ['#f472b6', '#fbcfe8', '#fb7185', '#fbbf24', '#f9a8d4', '#fda4af'];
-const FLOWER_PARTICLES = Array.from({ length: 16 }, (_, i) => {
-  const angle = (i / 16) * Math.PI * 2 + (i % 3) * 0.25;
-  const speedXZ = 0.45 + (i % 4) * 0.22;
-  return {
-    vx: Math.cos(angle) * speedXZ,
-    vy: 2.3 + (i % 5) * 0.36,
-    vz: Math.sin(angle) * speedXZ,
-    spinX: (i % 2 === 0 ? 1 : -1) * (3.5 + (i % 3)),
-    spinY: (i % 3 === 0 ? -1 : 1) * (4.0 + (i % 4)),
-    color: FLOWER_COLORS[i % FLOWER_COLORS.length],
-    scale: 0.85 + (i % 3) * 0.22,
-  };
-});
 
 export function ChibiAvatar({ entry, isLocal }: { entry: AvatarRuntimeEntry; isLocal: boolean }) {
   const groupRef = useRef<THREE.Group>(null);
   const leftArmRef = useRef<THREE.Mesh>(null);
   const rightArmRef = useRef<THREE.Mesh>(null);
   const headRef = useRef<THREE.Group>(null);
-  const flowerGroupRef = useRef<THREE.Group>(null);
-  const flowerMeshRefs = useRef<(THREE.Group | null)[]>([]);
 
   const palette = PRESET_COLORS[entry.avatarPresetId] ?? PRESET_COLORS['chibi-classic'];
 
@@ -43,23 +25,14 @@ export function ChibiAvatar({ entry, isLocal }: { entry: AvatarRuntimeEntry; isL
     if (!g) return;
 
     const nowMs = performance.now();
-    if (
-      entry.lastReaction &&
-      nowMs > entry.reactionUntil &&
-      (entry.animation === 'CLAP' ||
-        entry.animation === 'CHEER' ||
-        entry.animation === 'WAVE' ||
-        entry.animation === 'DANCE')
-    ) {
-      entry.animation = entry.seatId ? 'SIT' : 'IDLE';
-    }
+    syncReactionExpiry(entry, nowMs);
 
     // Smooth interpolation for remote avatars; local avatar updates immediately
     const lerpAlpha = isLocal ? 0.5 : Math.min(1, delta * 12);
     g.position.x = THREE.MathUtils.lerp(g.position.x, entry.targetPosition[0], lerpAlpha);
     g.position.y = THREE.MathUtils.lerp(g.position.y, entry.targetPosition[1], lerpAlpha);
     g.position.z = THREE.MathUtils.lerp(g.position.z, entry.targetPosition[2], lerpAlpha);
-    g.rotation.y = THREE.MathUtils.lerp(g.rotation.y, entry.targetRotationY, lerpAlpha);
+    g.rotation.y = lerpAngleY(g.rotation.y, entry.targetRotationY, lerpAlpha);
 
     const t = state.clock.elapsedTime;
     const anim = entry.animation;
@@ -93,7 +66,13 @@ export function ChibiAvatar({ entry, isLocal }: { entry: AvatarRuntimeEntry; isL
     } else if (anim === 'WAVE') {
       rArmX = -2.2;
       rArmZ = -0.3 + Math.sin(t * 10) * 0.4;
-    } else if (anim === 'DANCE') {
+    } else if (
+      anim === 'DANCE' ||
+      anim === 'DANCE_2' ||
+      anim === 'DANCE_3' ||
+      anim === 'DANCE_4' ||
+      anim === 'DANCE_5'
+    ) {
       bobY = Math.abs(Math.sin(t * 6)) * 0.1;
       lArmX = Math.sin(t * 6) * 0.8 - 0.6;
       rArmX = -Math.sin(t * 6) * 0.8 - 0.6;
@@ -120,35 +99,7 @@ export function ChibiAvatar({ entry, isLocal }: { entry: AvatarRuntimeEntry; isL
       rightArmRef.current.rotation.x = rArmX;
       rightArmRef.current.rotation.z = rArmZ;
     }
-
-    // 3D Flower Toss Burst animation at audience seat/position
-    if (flowerGroupRef.current) {
-      const active = entry.flowerBurstUntil > nowMs && entry.flowerBurstAt > 0;
-      flowerGroupRef.current.visible = active;
-      if (active) {
-        const elapsed = Math.max(0, (nowMs - entry.flowerBurstAt) / 1000);
-        const duration = 2.4;
-        const progress = Math.min(1, elapsed / duration);
-        const fadeScale = progress < 0.15 ? progress / 0.15 : Math.max(0, 1 - (progress - 0.15) / 0.85);
-        const gravity = 2.4;
-
-        for (let i = 0; i < FLOWER_PARTICLES.length; i++) {
-          const meshGroup = flowerMeshRefs.current[i];
-          if (!meshGroup) continue;
-          const p = FLOWER_PARTICLES[i];
-          const px = p.vx * elapsed + Math.sin(elapsed * 4 + i) * 0.08;
-          const py = 0.85 + p.vy * elapsed - 0.5 * gravity * elapsed * elapsed;
-          const pz = p.vz * elapsed + Math.cos(elapsed * 3.5 + i) * 0.08;
-
-          meshGroup.position.set(px, Math.max(0.2, py), pz);
-          meshGroup.rotation.set(elapsed * p.spinX, elapsed * p.spinY, elapsed * 2.2);
-          meshGroup.scale.setScalar(p.scale * fadeScale);
-        }
-      }
-    }
   });
-
-  const showReaction = entry.lastReaction && performance.now() < entry.reactionUntil;
 
   return (
     <group ref={groupRef} position={entry.position}>
@@ -196,58 +147,7 @@ export function ChibiAvatar({ entry, isLocal }: { entry: AvatarRuntimeEntry; isL
         </mesh>
       </group>
 
-      {/* Pooled 3D Flower Toss Burst (visible only during active FLOWER reaction) */}
-      <group ref={flowerGroupRef} visible={false}>
-        {FLOWER_PARTICLES.map((p, i) => (
-          <group
-            key={i}
-            ref={(el) => {
-              flowerMeshRefs.current[i] = el;
-            }}
-          >
-            {/* 5-petal blossom silhouette + warm golden center */}
-            <mesh>
-              <dodecahedronGeometry args={[0.085, 0]} />
-              <meshStandardMaterial
-                color={p.color}
-                emissive={p.color}
-                emissiveIntensity={0.65}
-                roughness={0.35}
-              />
-            </mesh>
-            <mesh scale={[1.6, 0.35, 1.6]}>
-              <octahedronGeometry args={[0.075, 0]} />
-              <meshStandardMaterial
-                color="#fef08a"
-                emissive="#fbbf24"
-                emissiveIntensity={0.5}
-              />
-            </mesh>
-          </group>
-        ))}
-      </group>
-
-      {/* Nameplate & Reaction */}
-      <Html position={[0, 1.38, 0]} center distanceFactor={10} style={{ pointerEvents: 'none' }}>
-        <div className="flex flex-col items-center gap-0.5 select-none">
-          {showReaction && (
-            <span className="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold text-stone-950 shadow">
-              {entry.lastReaction === 'FLOWER' ? '🌸 Virtual Flower' : entry.lastReaction}
-            </span>
-          )}
-          <span
-            className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium shadow ${
-              entry.role === 'ARTIST'
-                ? 'bg-amber-500/90 text-stone-950'
-                : isLocal
-                  ? 'bg-sky-500/90 text-white'
-                  : 'bg-stone-900/80 text-stone-200'
-            }`}
-          >
-            {entry.displayName} {entry.role === 'ARTIST' ? '★' : ''}
-          </span>
-        </div>
-      </Html>
+      <AvatarOverlay entry={entry} isLocal={isLocal} nameplateY={1.38} />
     </group>
   );
 }

@@ -8,6 +8,7 @@ export interface PersistedSnapshot {
   users?: unknown[];
   sessions?: Record<string, string>;
   rooms?: unknown[];
+  passcodes?: Record<string, string>;
   reports?: unknown[];
 }
 

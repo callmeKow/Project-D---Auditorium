@@ -89,6 +89,13 @@ export const apiClient = {
     return request<RoomDTO>(`/rooms/code/${encodeURIComponent(code)}`);
   },
 
+  verifyRoomPasscode(roomId: string, passcode: string) {
+    return request<{ ok: boolean }>(`/rooms/${roomId}/verify-passcode`, {
+      method: 'POST',
+      body: JSON.stringify({ passcode }),
+    });
+  },
+
   createRoom(
     payload: {
       name: string;

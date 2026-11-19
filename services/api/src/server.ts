@@ -17,6 +17,7 @@ import {
   listRooms,
   persistRooms,
   setRoomState,
+  verifyRoomPasscode,
 } from './modules/room/room.module.js';
 import { holdSeat, reserveSeat, toggleSeatLock } from './modules/seating/seating.module.js';
 import {
@@ -157,6 +158,15 @@ export function createApp() {
     res.json(updated);
   });
 
+  app.post('/rooms/:roomId/verify-passcode', (req, res) => {
+    const room = getRoomById(req.params.roomId);
+    if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
+    if (!verifyRoomPasscode(room.id, req.body?.passcode)) {
+      return res.status(403).json({ error: 'INVALID_PASSCODE' });
+    }
+    res.json({ ok: true });
+  });
+
   // Editable Setlist (SM-08) & Performer Invites (LMR-09)
   app.post('/rooms/:roomId/setlist', (req, res) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -164,7 +174,7 @@ export function createApp() {
     if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
     const room = getRoomById(req.params.roomId);
     if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
-    if (!canControlConcert(user.id, user.roles, room.concert)) {
+    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle)) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     try {
@@ -183,7 +193,7 @@ export function createApp() {
     if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
     const room = getRoomById(req.params.roomId);
     if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
-    if (!canControlConcert(user.id, user.roles, room.concert)) {
+    if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle)) {
       return res.status(403).json({ error: 'FORBIDDEN' });
     }
     try {

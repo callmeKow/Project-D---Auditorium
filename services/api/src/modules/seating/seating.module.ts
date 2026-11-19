@@ -30,6 +30,41 @@ export function createSmallRoomSeats(capacity = 20): SeatDTO[] {
   return seats;
 }
 
+// Cozy U-shaped KTV Lounge Sofa arrangement facing the Karaoke screen & vocal mic podium (10-15 seats)
+export function createKaraokeLoungeSeats(capacity = 12): SeatDTO[] {
+  const clamped = Math.max(10, Math.min(15, capacity));
+  const specs: Array<{ id: string; row: string; number: number; tier: SeatTier; pos: [number, number, number] }> = [
+    // Left Sofa Wing (4 seats along x = -3.45)
+    { id: 'L1', row: 'L', number: 1, tier: 'FRONT_ROW', pos: [-3.45, 0, 2.0] },
+    { id: 'L2', row: 'L', number: 2, tier: 'PREMIUM', pos: [-3.45, 0, 3.25] },
+    { id: 'L3', row: 'L', number: 3, tier: 'PREMIUM', pos: [-3.45, 0, 4.5] },
+    { id: 'L4', row: 'L', number: 4, tier: 'STANDARD', pos: [-3.45, 0, 5.75] },
+    // Center Back Sofa (4 seats along z = 6.9)
+    { id: 'C1', row: 'C', number: 1, tier: 'STANDARD', pos: [-1.95, 0, 6.9] },
+    { id: 'C2', row: 'C', number: 2, tier: 'STANDARD', pos: [-0.65, 0, 6.9] },
+    { id: 'C3', row: 'C', number: 3, tier: 'STANDARD', pos: [0.65, 0, 6.9] },
+    { id: 'C4', row: 'C', number: 4, tier: 'STANDARD', pos: [1.95, 0, 6.9] },
+    // Right Sofa Wing (4 seats along x = 3.45)
+    { id: 'R1', row: 'R', number: 1, tier: 'FRONT_ROW', pos: [3.45, 0, 2.0] },
+    { id: 'R2', row: 'R', number: 2, tier: 'PREMIUM', pos: [3.45, 0, 3.25] },
+    { id: 'R3', row: 'R', number: 3, tier: 'PREMIUM', pos: [3.45, 0, 4.5] },
+    { id: 'R4', row: 'R', number: 4, tier: 'STANDARD', pos: [3.45, 0, 5.75] },
+    // Optional Front Lounge Stools (capacity 13..15)
+    { id: 'F1', row: 'F', number: 1, tier: 'FRONT_ROW', pos: [-1.35, 0, 2.1] },
+    { id: 'F2', row: 'F', number: 2, tier: 'FRONT_ROW', pos: [0, 0, 2.1] },
+    { id: 'F3', row: 'F', number: 3, tier: 'FRONT_ROW', pos: [1.35, 0, 2.1] },
+  ];
+
+  return specs.slice(0, clamped).map((s) => ({
+    id: s.id,
+    row: s.row,
+    number: s.number,
+    tier: s.tier,
+    state: 'AVAILABLE',
+    position: s.pos,
+  }));
+}
+
 export function sweepExpiredHolds(seats: SeatDTO[], now = Date.now()): SeatDTO[] {
   const changed: SeatDTO[] = [];
   for (const seat of seats) {
