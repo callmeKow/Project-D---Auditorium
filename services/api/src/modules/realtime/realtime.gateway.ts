@@ -533,6 +533,32 @@ export function attachRealtimeGateway(server: HttpServer) {
             broadcastToRoom(session.roomId, { priority: 'P0', type: 'SEAT_UPDATED', seat });
           }
 
+          // Unexpected disconnect (crash / network drop): if sole Host of a Private room drops while others remain,
+          // auto-handover Host: Priority 1 = Performer (ARTIST / invited performer), Priority 2 = Random Audience
+          if (room.isPrivate && session.userId === room.concert.hostUserId && clients.size > 0) {
+            const remaining = Array.from(clients.values());
+            const performers = remaining.filter(
+              (c) => c.role === 'ARTIST' || room.concert.invitedPerformerIds.includes(c.userId)
+            );
+            const nextHost =
+              performers.length > 0
+                ? performers[0]
+                : remaining[Math.floor(Math.random() * remaining.length)];
+            room.concert.hostUserId = nextHost.userId;
+            room.concert.performerName = nextHost.displayName;
+            persistRooms();
+            broadcastToRoom(session.roomId, {
+              priority: 'P0',
+              type: 'CONCERT_STATE_UPDATED',
+              concert: room.concert,
+            });
+            broadcastToRoom(session.roomId, {
+              priority: 'P2',
+              type: 'SYSTEM_NOTICE',
+              text: `👑 Host cũ bị ngắt kết nối — ${nextHost.displayName} đã tự động trở thành Host duy nhất của phòng.`,
+            });
+          }
+
           // TBD-11: Performer disconnect auto-fallback to Prerecorded
           const isPerformer = session.role === 'ARTIST' || session.userId === room.concert.hostUserId;
           if (isPerformer && room.concert.state === 'LIVE') {

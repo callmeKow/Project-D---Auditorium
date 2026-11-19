@@ -102,11 +102,8 @@ export function AuditoriumPage() {
   const [systemNotice, setSystemNotice] = useState<string | null>(realtimeStore.systemNotice);
   const [reconnecting, setReconnecting] = useState(realtimeStore.reconnecting);
   const [cameraMode, setCameraMode] = useState<CameraMode>('AUDIENCE_ORBIT');
-  // TBD-06 & TBD-23: Default to HIGH on desktop so PBR reflections & lighting shine immediately
-  const [qualityPreset, setQualityPreset] = useState<QualityPreset>(() => {
-    const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
-    return isMobile ? 'MEDIUM' : 'HIGH';
-  });
+  // Temporarily locked to LOW quality until further configuration
+  const [qualityPreset, setQualityPreset] = useState<QualityPreset>('LOW');
   const [perf, setPerf] = useState({ fps: 60, drawCalls: 0 });
   const [pingMs, setPingMs] = useState<number | null>(realtimeStore.pingMs);
   const [lowFpsStreak, setLowFpsStreak] = useState(0);
@@ -160,6 +157,8 @@ export function AuditoriumPage() {
   const [reportTargetId, setReportTargetId] = useState('');
   const [reportText, setReportText] = useState('');
   const [reportSent, setReportSent] = useState(false);
+  const [exitHostModalOpen, setExitHostModalOpen] = useState(false);
+  const [selectedSuccessorHostId, setSelectedSuccessorHostId] = useState('');
 
   // Loading & anti-spam locks for action buttons
   type ReactionAction = 'CLAP' | 'CHEER' | 'WAVE' | 'DANCE' | 'DANCE_2' | 'DANCE_3' | 'DANCE_4' | 'DANCE_5' | 'FLOWER';
@@ -1006,11 +1005,10 @@ export function AuditoriumPage() {
           )}
 
           <button
-            onClick={() =>
-              setQualityPreset((q) => (q === 'HIGH' ? 'MEDIUM' : q === 'MEDIUM' ? 'LOW' : 'HIGH'))
-            }
-            title="3D Quality Preset (Exp E)"
-            className="rounded-xl border border-stone-700/80 bg-stone-950/80 px-2.5 py-1.5 font-mono text-[11px] text-stone-200 backdrop-blur transition hover:bg-stone-800"
+            type="button"
+            onClick={() => setQualityPreset('LOW')}
+            title="3D Quality: LOW (Tạm thời chỉ hỗ trợ mức Low)"
+            className="rounded-xl border border-stone-700/80 bg-stone-950/80 px-2.5 py-1.5 font-mono text-[11px] text-stone-200 backdrop-blur transition"
           >
             3D:{qualityPreset}
           </button>
@@ -1071,7 +1069,19 @@ export function AuditoriumPage() {
           </button>
 
           <button
-            onClick={() => navigate('/explore')}
+            onClick={() => {
+              const otherParticipants = participants.filter((p) => p.userId !== effectiveUserId);
+              if (isPrivateRoom && isSoleRoomHost && otherParticipants.length > 0) {
+                const preferred =
+                  otherParticipants.find(
+                    (p) => p.role === 'ARTIST' || room?.concert.invitedPerformerIds.includes(p.userId)
+                  ) ?? otherParticipants[0];
+                setSelectedSuccessorHostId(preferred.userId);
+                setExitHostModalOpen(true);
+                return;
+              }
+              navigate('/explore');
+            }}
             className="flex items-center gap-1 rounded-xl border border-stone-700/80 bg-stone-950/80 px-2.5 py-1.5 text-xs text-stone-300 backdrop-blur transition hover:bg-stone-800"
           >
             <LogOut className="h-3.5 w-3.5" /> Exit
@@ -1980,6 +1990,82 @@ export function AuditoriumPage() {
             </div>
           )}
         </aside>
+      )}
+
+      {/* Host Exit Transfer Modal (Private Room: Host chooses successor before leaving) */}
+      {exitHostModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-amber-500/45 bg-stone-900 p-6 shadow-2xl">
+            <h3 className="flex items-center gap-2 text-base font-bold text-white">
+              👑 Chọn người nhận quyền Host trước khi rời phòng
+            </h3>
+            <p className="mt-1 text-xs text-stone-400">
+              Phòng Private luôn cần duy nhất 1 Host. Hãy chọn một thành viên đang có mặt trong phòng để bàn giao quyền Host:
+            </p>
+
+            <div className="mt-4 max-h-60 space-y-2 overflow-y-auto pr-1">
+              {participants
+                .filter((p) => p.userId !== effectiveUserId)
+                .map((p) => {
+                  const isPerformer = p.role === 'ARTIST' || room?.concert.invitedPerformerIds.includes(p.userId);
+                  const selected = selectedSuccessorHostId === p.userId;
+                  return (
+                    <button
+                      key={p.userId}
+                      type="button"
+                      onClick={() => setSelectedSuccessorHostId(p.userId)}
+                      className={`flex w-full items-center justify-between rounded-xl border px-3 py-2.5 text-left text-xs transition ${
+                        selected
+                          ? 'border-amber-400 bg-amber-500/20 text-white ring-1 ring-amber-400'
+                          : 'border-stone-800 bg-stone-950 text-stone-300 hover:border-stone-600'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate font-bold">
+                          {p.displayName} {isPerformer ? '★' : ''}
+                        </div>
+                        <div className="text-[10px] text-stone-400">
+                          {isPerformer ? 'Performer (Ưu tiên)' : p.role} {p.seatId ? `• Seat ${p.seatId}` : '• Aisle'}
+                        </div>
+                      </div>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          selected ? 'bg-amber-400 text-stone-950' : 'bg-stone-800 text-stone-400'
+                        }`}
+                      >
+                        {selected ? 'Đã chọn' : 'Chọn'}
+                      </span>
+                    </button>
+                  );
+                })}
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setExitHostModalOpen(false)}
+                className="rounded-xl px-3.5 py-2 text-xs text-stone-300 hover:bg-stone-800"
+              >
+                Ở lại phòng
+              </button>
+              <button
+                type="button"
+                disabled={!selectedSuccessorHostId}
+                onClick={() => {
+                  if (!selectedSuccessorHostId) return;
+                  realtimeStore.send({ type: 'TRANSFER_HOST', targetUserId: selectedSuccessorHostId });
+                  setExitHostModalOpen(false);
+                  window.setTimeout(() => {
+                    navigate('/explore');
+                  }, 120);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-xs font-bold text-stone-950 transition hover:bg-amber-400 disabled:opacity-50"
+              >
+                👑 Chuyển Host &amp; Rời phòng
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Safety / Copyright Report Modal */}
