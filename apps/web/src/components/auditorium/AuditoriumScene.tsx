@@ -1825,9 +1825,101 @@ function KaraokeLoungeArchitecture({
   );
 }
 
+interface ObstacleBox {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  allowExitIfInside?: boolean;
+}
+
+const AVATAR_COLLISION_RADIUS = 0.28;
+
+function resolveAuditoriumCollision(
+  curX: number,
+  curZ: number,
+  nextX: number,
+  nextZ: number,
+  venueStyle: VenueStyle,
+  seats: RoomDTO['seats']
+): [number, number] {
+  const boxes: ObstacleBox[] = [];
+
+  // 1. All Audience Seats / KTV Sofas
+  const seatHalfW = venueStyle === 'KARAOKE' ? 0.44 : 0.34;
+  const seatHalfD = venueStyle === 'KARAOKE' ? 0.36 : 0.3;
+  for (const seat of seats) {
+    const [sx, , sz] = seat.position;
+    boxes.push({
+      minX: sx - seatHalfW,
+      maxX: sx + seatHalfW,
+      minZ: sz - seatHalfD,
+      maxZ: sz + seatHalfD,
+      allowExitIfInside: true,
+    });
+  }
+
+  if (venueStyle === 'KARAOKE') {
+    // KTV Glass Cocktail Table in center of U-sofa ([0, 0, 4.2], 2.35 x 2.95)
+    boxes.push({ minX: -1.18, maxX: 1.18, minZ: 2.72, maxZ: 5.68 });
+    // U-Shaped Sofa Backrest Rails
+    boxes.push({ minX: -4.12, maxX: -3.78, minZ: 1.45, maxZ: 6.32 });
+    boxes.push({ minX: 3.78, maxX: 4.12, minZ: 1.45, maxZ: 6.32 });
+    boxes.push({ minX: -2.62, maxX: 2.62, minZ: 7.2, maxZ: 7.52 });
+    // Karaoke Stage Left & Right Subwoofer Speakers
+    boxes.push({ minX: -4.52, maxX: -3.68, minZ: -1.96, maxZ: -1.24 });
+    boxes.push({ minX: 3.68, maxX: 4.52, minZ: -1.96, maxZ: -1.24 });
+  } else {
+    // Chamber / Concert Stage Grand Piano Body ([-1.4, 0.44, -2.1], 1.65 x 1.25)
+    boxes.push({ minX: -2.24, maxX: -0.56, minZ: -2.74, maxZ: -1.46 });
+    // Piano Bench ([-1.4, 0.44, -1.05], 0.8 x 0.36) — allow smooth exit if seated/playing
+    boxes.push({ minX: -1.82, maxX: -0.98, minZ: -1.24, maxZ: -0.86, allowExitIfInside: true });
+    // Chamber / Concert Stage Monitor Speakers ([±3.85, 1.02, -1.55], 0.68 x 0.54)
+    boxes.push({ minX: -4.24, maxX: -3.46, minZ: -1.88, maxZ: -1.22 });
+    boxes.push({ minX: 3.46, maxX: 4.24, minZ: -1.88, maxZ: -1.22 });
+    // Center Stage Vocal Mic Stand ([0.8, 0.44, -1.3])
+    boxes.push({ minX: 0.62, maxX: 0.98, minZ: -1.48, maxZ: -1.12 });
+  }
+
+  let rx = nextX;
+  let rz = nextZ;
+
+  // Two-pass AABB push-out for smooth corner sliding along tables/chairs/piano
+  for (let pass = 0; pass < 2; pass++) {
+    for (const box of boxes) {
+      const eMinX = box.minX - AVATAR_COLLISION_RADIUS;
+      const eMaxX = box.maxX + AVATAR_COLLISION_RADIUS;
+      const eMinZ = box.minZ - AVATAR_COLLISION_RADIUS;
+      const eMaxZ = box.maxZ + AVATAR_COLLISION_RADIUS;
+
+      if (box.allowExitIfInside) {
+        const wasInside = curX > eMinX && curX < eMaxX && curZ > eMinZ && curZ < eMaxZ;
+        if (wasInside) continue;
+      }
+
+      if (rx > eMinX && rx < eMaxX && rz > eMinZ && rz < eMaxZ) {
+        const overlapLeft = rx - eMinX;
+        const overlapRight = eMaxX - rx;
+        const overlapTop = rz - eMinZ;
+        const overlapBottom = eMaxZ - rz;
+        const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+
+        if (minOverlap === overlapLeft) rx = eMinX;
+        else if (minOverlap === overlapRight) rx = eMaxX;
+        else if (minOverlap === overlapTop) rz = eMinZ;
+        else rz = eMaxZ;
+      }
+    }
+  }
+
+  return [rx, rz];
+}
+
 function AuditoriumController({
   localUserId,
   canAccessStage,
+  venueStyle,
+  seats,
   pianoKeyboardActive = false,
   cameraMode,
   qualityPreset,
@@ -1837,6 +1929,8 @@ function AuditoriumController({
 }: {
   localUserId: string;
   canAccessStage: boolean;
+  venueStyle: VenueStyle;
+  seats: RoomDTO['seats'];
   pianoKeyboardActive?: boolean;
   cameraMode: CameraMode;
   qualityPreset: QualityPreset;
@@ -1932,8 +2026,18 @@ function AuditoriumController({
     if (dx !== 0 || dz !== 0) {
       const speed = 3.5 * delta;
       const minZ = canAccessStage ? -3.2 : 0.8;
-      const nextX = Math.max(-5.5, Math.min(5.5, local.targetPosition[0] + dx * speed));
-      const nextZ = Math.max(minZ, Math.min(8.5, local.targetPosition[2] + dz * speed));
+      const rawX = Math.max(-5.5, Math.min(5.5, local.targetPosition[0] + dx * speed));
+      const rawZ = Math.max(minZ, Math.min(8.5, local.targetPosition[2] + dz * speed));
+      const [colX, colZ] = resolveAuditoriumCollision(
+        local.targetPosition[0],
+        local.targetPosition[2],
+        rawX,
+        rawZ,
+        venueStyle,
+        seats
+      );
+      const nextX = Math.max(-5.5, Math.min(5.5, colX));
+      const nextZ = Math.max(minZ, Math.min(8.5, colZ));
       const nextY = getAuditoriumFloorY(nextX, nextZ);
       const nextRot = Math.atan2(dx, dz);
 
@@ -2290,6 +2394,8 @@ export function AuditoriumScene({
           room.concert.hostUserId === localUserId ||
           room.concert.invitedPerformerIds.includes(localUserId)
         }
+        venueStyle={venueStyle}
+        seats={room.seats}
         pianoKeyboardActive={pianoKeyboardActive}
         cameraMode={cameraMode}
         qualityPreset={qualityPreset}
