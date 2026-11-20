@@ -204,6 +204,7 @@ export type RealtimeServerMessage =
       avatars: AvatarTransformPayload[];
       chat: ChatMessageDTO[];
       serverTime?: number;
+      serverBootId?: string;
     }
   | { priority: 'P0'; type: 'ROOM_STATE_UPDATED'; roomState: RoomState }
   | { priority: 'P0'; type: 'SEAT_UPDATED'; seat: SeatDTO }
@@ -241,6 +242,7 @@ export type RealtimeClientMessage =
   | { type: 'REORDER_SETLIST'; orderedIds: string[] }
   | { type: 'SET_LIGHTING_CUE'; preset: LightingPreset }
   | { type: 'TRANSFER_HOST'; targetUserId: string }
+  | { type: 'RESTORE_CONCERT_STATE'; concert: ConcertDTO }
   | { type: 'PING'; clientSentAt: number };
 
 /**

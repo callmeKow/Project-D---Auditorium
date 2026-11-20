@@ -70,6 +70,30 @@ class RealtimeRoomStore {
   private manualDisconnect = false;
   private reconnectTimer: number | null = null;
   private pingTimer: number | null = null;
+  private lastServerBootId: string | null = null;
+  private cachedConcertByRoom = new Map<string, ConcertDTO>();
+
+  private saveConcertCache(roomId: string, concert: ConcertDTO) {
+    const clone = JSON.parse(JSON.stringify(concert)) as ConcertDTO;
+    this.cachedConcertByRoom.set(roomId, clone);
+    try {
+      sessionStorage.setItem(`vmw_concert_${roomId}`, JSON.stringify(clone));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  private loadConcertCache(roomId: string): ConcertDTO | null {
+    const mem = this.cachedConcertByRoom.get(roomId);
+    if (mem) return mem;
+    try {
+      const raw = sessionStorage.getItem(`vmw_concert_${roomId}`);
+      if (!raw) return null;
+      return JSON.parse(raw) as ConcertDTO;
+    } catch {
+      return null;
+    }
+  }
 
   setSignalHandler(
     handler: ((fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: unknown) => void) | null
@@ -140,7 +164,32 @@ class RealtimeRoomStore {
           }
           this.passcodeRequired = false;
           this.passcodeError = null;
+
+          // If the backend restarted/redeployed while users were still in the room,
+          // restore our active setlist & playback state instead of losing added songs.
+          const serverRestarted =
+            Boolean(msg.serverBootId) &&
+            Boolean(this.lastServerBootId) &&
+            msg.serverBootId !== this.lastServerBootId;
+          const cachedConcert = this.loadConcertCache(msg.room.id);
+          const shouldRestore =
+            (serverRestarted || !this.lastServerBootId) &&
+            cachedConcert &&
+            cachedConcert.setlist.length > 0 &&
+            (cachedConcert.setlist.length !== msg.room.concert.setlist.length ||
+              cachedConcert.setlist.some((s, idx) => s.id !== msg.room.concert.setlist[idx]?.id));
+
+          if (msg.serverBootId) {
+            this.lastServerBootId = msg.serverBootId;
+          }
+
           this.room = msg.room;
+          if (shouldRestore && cachedConcert) {
+            this.room.concert = cachedConcert;
+            this.send({ type: 'RESTORE_CONCERT_STATE', concert: cachedConcert });
+          } else {
+            this.saveConcertCache(msg.room.id, msg.room.concert);
+          }
           this.chat = msg.chat;
           this.avatars.clear();
           for (const av of msg.avatars) {
@@ -230,6 +279,7 @@ class RealtimeRoomStore {
         case 'CONCERT_STATE_UPDATED': {
           if (this.room) {
             this.room.concert = msg.concert;
+            this.saveConcertCache(this.room.id, msg.concert);
             if (msg.fallbackNotice) {
               this.systemNotice = msg.fallbackNotice;
             }
@@ -667,8 +717,18 @@ class RealtimeRoomStore {
       this.ws.close();
       this.ws = null;
     }
+    const prevRoomId = this.room?.id;
     this.avatars.clear();
     this.room = null;
+    this.lastServerBootId = null;
+    if (prevRoomId) {
+      this.cachedConcertByRoom.delete(prevRoomId);
+      try {
+        sessionStorage.removeItem(`vmw_concert_${prevRoomId}`);
+      } catch {
+        // Ignore
+      }
+    }
     this.chat = [];
     this.moderationNotice = null;
     this.systemNotice = null;

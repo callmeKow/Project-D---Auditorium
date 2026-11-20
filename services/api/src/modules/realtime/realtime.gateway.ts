@@ -27,6 +27,8 @@ interface ClientSession {
 }
 
 const MAX_CHAT_AGE_MS = 24 * 60 * 60 * 1000; // TBD-17: 24h max chat retention
+const SERVER_BOOT_ID = crypto.randomUUID();
+const restoredRoomsAfterBoot = new Set<string>();
 const roomClients = new Map<string, Map<string, ClientSession>>(); // roomId -> userId -> session
 const roomChatHistory = new Map<string, ChatMessageDTO[]>();
 
@@ -210,6 +212,7 @@ export function attachRealtimeGateway(server: HttpServer) {
           avatars: Array.from(clients.values()).map((c) => c.avatar),
           chat: pruneExpiredChat(room.id),
           serverTime: Date.now(),
+          serverBootId: SERVER_BOOT_ID,
         };
         ws.send(JSON.stringify(snapshot));
         broadcastToRoom(room.id, { priority: 'P1', type: 'AVATAR_STATE', avatar }, parsed.userId);
@@ -423,6 +426,7 @@ export function attachRealtimeGateway(server: HttpServer) {
           if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) {
             return;
           }
+          restoredRoomsAfterBoot.add(session.roomId);
           const concert = room.concert;
           try {
             if (parsed.action === 'START_SOUND_CHECK') {
@@ -529,6 +533,29 @@ export function attachRealtimeGateway(server: HttpServer) {
             type: 'SYSTEM_NOTICE',
             text: `👑 ${target.displayName} đã được chuyển quyền làm Host duy nhất của phòng.`,
           });
+          setImmediate(persistRooms);
+          break;
+        }
+
+        case 'RESTORE_CONCERT_STATE': {
+          if (!canControlConcert(session.userId, [session.role], room.concert, room.venueStyle, room.isPrivate)) return;
+          if (restoredRoomsAfterBoot.has(session.roomId)) return;
+          const incoming = parsed.concert;
+          if (!incoming || !Array.isArray(incoming.setlist) || incoming.setlist.length === 0) return;
+          restoredRoomsAfterBoot.add(session.roomId);
+
+          room.concert.setlist = incoming.setlist;
+          room.concert.currentSetlistIndex = Math.max(
+            0,
+            Math.min(incoming.currentSetlistIndex ?? 0, incoming.setlist.length - 1)
+          );
+          room.concert.playbackMode = incoming.playbackMode === 'QUEUE_NEXT' ? 'QUEUE_NEXT' : 'REPEAT_ONE';
+          room.concert.state = incoming.state;
+          room.concert.trackPlaying = incoming.trackPlaying;
+          room.concert.trackStartedAtServerMs = incoming.trackStartedAtServerMs;
+          room.concert.trackPausedAtSec = incoming.trackPausedAtSec;
+
+          broadcastToRoom(session.roomId, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
           setImmediate(persistRooms);
           break;
         }
