@@ -28,6 +28,7 @@ import {
   Youtube,
   Loader2,
   Disc3,
+  X,
   GripVertical,
   Repeat1,
   ListOrdered,
@@ -243,7 +244,7 @@ export function AuditoriumPage() {
       if (kScore && kScore.until > performance.now() && kScore.until !== lastScoreShownUntilRef.current) {
         lastScoreShownUntilRef.current = kScore.until;
         setKaraokeScoreCard({ score: kScore.score, trackTitle: kScore.trackTitle });
-        scheduleActionTimeout(() => setKaraokeScoreCard(null), 5400);
+        scheduleActionTimeout(() => setKaraokeScoreCard(null), 6000);
       }
 
       if (concertUpdated && transportLockRef.current) {
@@ -392,7 +393,12 @@ export function AuditoriumPage() {
     if (pendingTransport) return;
     setPendingTransport(action);
     transportLockRef.current = { action, startedAt: performance.now() };
-    realtimeStore.send({ type: 'PERFORMER_CONCERT_CONTROL', action });
+    const karaokeScore =
+      action === 'END_SONG' && isKaraoke ? audioEngine.computeKaraokeScore() : undefined;
+    if (action === 'END_SONG' && isKaraoke) {
+      audioEngine.resetKaraokeVocalSession();
+    }
+    realtimeStore.send({ type: 'PERFORMER_CONCERT_CONTROL', action, karaokeScore });
     // Safety release if offline/disconnected so button never hangs
     scheduleActionTimeout(() => {
       if (transportLockRef.current?.action === action) {
@@ -498,6 +504,16 @@ export function AuditoriumPage() {
       clientTimestampMs: performance.now(),
     });
   };
+
+  // Sample Mic vocal energy during live Karaoke songs for automatic end-of-song scoring
+  useEffect(() => {
+    if (!isKaraoke || room?.concert.state !== 'LIVE') return;
+    audioEngine.resetKaraokeVocalSession();
+    const id = window.setInterval(() => {
+      audioEngine.sampleKaraokeVocalFrame();
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [isKaraoke, room?.concert.state, room?.concert.currentSetlistIndex]);
 
   const handleOpenPianoSimulator = async () => {
     if (room?.venueStyle !== 'CHAMBER') {
@@ -746,6 +762,30 @@ export function AuditoriumPage() {
             onAutoAdvanceNext={(expectedIndex) =>
               realtimeStore.send({ type: 'PERFORMER_CONCERT_CONTROL', action: 'NEXT_SONG', expectedIndex })
             }
+            onKaraokeSongEnded={
+              isKaraoke
+                ? (expectedIndex, shouldAutoAdvance) => {
+                    const score = audioEngine.computeKaraokeScore();
+                    audioEngine.resetKaraokeVocalSession();
+                    realtimeStore.send({
+                      type: 'PERFORMER_CONCERT_CONTROL',
+                      action: 'END_SONG',
+                      expectedIndex,
+                      karaokeScore: score,
+                    });
+                    if (shouldAutoAdvance) {
+                      scheduleActionTimeout(() => {
+                        realtimeStore.send({
+                          type: 'PERFORMER_CONCERT_CONTROL',
+                          action: 'NEXT_SONG',
+                          expectedIndex,
+                        });
+                      }, 6000);
+                    }
+                  }
+                : undefined
+            }
+            karaokeScoreCard={isKaraoke ? karaokeScoreCard : null}
             ytIframeRef={ytIframeRef}
             onAutoplayBlocked={setAutoplayBlocked}
             onSelectSeat={(seatId) => {
@@ -926,11 +966,26 @@ export function AuditoriumPage() {
           )}
         </div>
 
-        {/* Fun Entertainment Karaoke Score Card Celebration (A4 — Free Fun Overlay) */}
+        {/* Fun Entertainment Karaoke Score Card Celebration (auto-closes after 6s) */}
         {karaokeScoreCard && (
-          <div className="pointer-events-none absolute left-1/2 top-24 z-30 -translate-x-1/2 animate-bounce rounded-2xl border border-fuchsia-400/60 bg-gradient-to-br from-fuchsia-950/95 via-stone-950/95 to-indigo-950/95 px-6 py-4 text-center shadow-2xl backdrop-blur-md">
+          <div className="pointer-events-auto absolute left-1/2 top-20 z-30 w-80 max-w-[92vw] -translate-x-1/2 rounded-2xl border border-fuchsia-400/60 bg-gradient-to-br from-fuchsia-950/95 via-stone-950/95 to-indigo-950/95 px-6 py-4 text-center shadow-2xl backdrop-blur-md">
+            <button
+              type="button"
+              onClick={() => setKaraokeScoreCard(null)}
+              title="Đóng bảng điểm"
+              className="absolute right-2.5 top-2.5 rounded-lg p-1 text-stone-400 transition hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
             <div className="text-[10px] font-bold uppercase tracking-widest text-fuchsia-300">
-              🎤 Karaoke Applause Score
+              🎤 Karaoke Score • Hạng{' '}
+              {karaokeScoreCard.score >= 95
+                ? 'S+'
+                : karaokeScoreCard.score >= 90
+                  ? 'S'
+                  : karaokeScoreCard.score >= 82
+                    ? 'A'
+                    : 'B'}
             </div>
             <div className="mt-1 bg-gradient-to-r from-amber-300 via-pink-300 to-cyan-300 bg-clip-text text-4xl font-black text-transparent">
               {karaokeScoreCard.score} / 100
@@ -940,13 +995,16 @@ export function AuditoriumPage() {
                 ? '🔥 Tuyệt đỉnh sân khấu! Cả phòng vỗ tay rần rần!'
                 : karaokeScoreCard.score >= 90
                   ? '✨ Giọng hát cực cháy! Sân khấu bùng nổ!'
-                  : '👏 Hát rất hay và đầy cảm xúc!'}
+                  : karaokeScoreCard.score >= 82
+                    ? '👏 Hát rất hay và đầy cảm xúc!'
+                    : '🎶 Phong độ ổn định! Quẩy tiếp bài sau nào!'}
             </div>
             {karaokeScoreCard.trackTitle && (
-              <div className="mt-0.5 max-w-xs truncate text-[10px] text-stone-400">
+              <div className="mt-1 truncate text-[10px] text-stone-400">
                 {karaokeScoreCard.trackTitle}
               </div>
             )}
+            <div className="mt-2 text-[9px] text-stone-500">Tự đóng sau 6 giây</div>
           </div>
         )}
 
@@ -1127,6 +1185,19 @@ export function AuditoriumPage() {
             onSelectQueuedIndex={setQueuedDeckBIdx}
             deckAVolume={deckAVolume}
             onDeckAVolumeChange={setDeckAVolume}
+            onBeforeSwitchToDeckB={
+              isKaraoke
+                ? () => {
+                    const score = audioEngine.computeKaraokeScore();
+                    audioEngine.resetKaraokeVocalSession();
+                    realtimeStore.send({
+                      type: 'PERFORMER_CONCERT_CONTROL',
+                      action: 'END_SONG',
+                      karaokeScore: score,
+                    });
+                  }
+                : undefined
+            }
             onTransitionVisualChange={setTransitionVisual}
           />
         )}

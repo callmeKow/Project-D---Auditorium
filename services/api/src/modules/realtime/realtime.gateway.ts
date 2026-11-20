@@ -298,6 +298,18 @@ export function attachRealtimeGateway(server: HttpServer) {
           roomChatHistory.set(session.roomId, hist);
 
           broadcastToRoom(session.roomId, { priority: 'P2', type: 'CHAT_MESSAGE', message });
+
+          const pointMatch = filtered.text.trim().match(/^\/point:\s*(10|[1-9])$/i);
+          if (pointMatch) {
+            const score = Number(pointMatch[1]);
+            broadcastToRoom(session.roomId, {
+              priority: 'P2',
+              type: 'POINT_CARD',
+              userId: session.userId,
+              displayName: session.displayName,
+              score,
+            });
+          }
           break;
         }
 
@@ -466,7 +478,11 @@ export function attachRealtimeGateway(server: HttpServer) {
           if (parsed.action === 'END_SONG') {
             const item = concert.setlist[concert.currentSetlistIndex];
             const karaokeScore =
-              room.venueStyle === 'KARAOKE' ? Math.floor(85 + Math.random() * 16) : undefined;
+              room.venueStyle === 'KARAOKE'
+                ? typeof parsed.karaokeScore === 'number' && Number.isFinite(parsed.karaokeScore)
+                  ? Math.max(75, Math.min(100, Math.round(parsed.karaokeScore)))
+                  : Math.floor(78 + Math.random() * 23)
+                : undefined;
             broadcastToRoom(session.roomId, {
               priority: 'P2',
               type: 'SONG_ENDED_APPLAUSE',

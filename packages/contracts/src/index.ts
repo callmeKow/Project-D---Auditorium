@@ -215,6 +215,7 @@ export type RealtimeServerMessage =
   | { priority: 'P2'; type: 'CHAT_MESSAGE'; message: ChatMessageDTO }
   | { priority: 'P2'; type: 'REACTION'; userId: string; displayName?: string; reaction: ReactionType }
   | { priority: 'P2'; type: 'SONG_ENDED_APPLAUSE'; setlistItemId: string; karaokeScore?: number }
+  | { priority: 'P2'; type: 'POINT_CARD'; userId: string; displayName?: string; score: number }
   | { priority: 'P2'; type: 'LIGHTING_CUE'; preset: LightingPreset }
   | { priority: 'P2'; type: 'SYSTEM_NOTICE'; text: string };
 
@@ -231,6 +232,7 @@ export type RealtimeClientMessage =
       type: 'PERFORMER_CONCERT_CONTROL';
       action: 'START_SOUND_CHECK' | 'GO_LIVE' | 'PAUSE' | 'INTERMISSION' | 'NEXT_SONG' | 'END_SONG' | 'COMPLETE' | 'TOGGLE_MODE';
       expectedIndex?: number;
+      karaokeScore?: number;
     }
   | { type: 'SELECT_SETLIST_ITEM'; index: number }
   | { type: 'SET_PLAYBACK_MODE'; mode: 'REPEAT_ONE' | 'QUEUE_NEXT' }

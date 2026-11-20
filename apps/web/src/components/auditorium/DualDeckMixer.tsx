@@ -13,6 +13,7 @@ interface DualDeckMixerProps {
   onSelectQueuedIndex: (index: number) => void;
   deckAVolume: number;
   onDeckAVolumeChange: (vol: number) => void;
+  onBeforeSwitchToDeckB?: () => void;
 }
 
 function sendCueYtCmd(iframe: HTMLIFrameElement | null, func: string, args: unknown = '') {
@@ -75,6 +76,7 @@ export function DualDeckMixer({
   onSelectQueuedIndex,
   deckAVolume,
   onDeckAVolumeChange,
+  onBeforeSwitchToDeckB,
   onTransitionVisualChange,
 }: DualDeckMixerProps & {
   onTransitionVisualChange?: (state: {
@@ -255,6 +257,7 @@ export function DualDeckMixer({
 
   const finishSwitchToDeckB = () => {
     stopAutoMixTimer();
+    onBeforeSwitchToDeckB?.();
     if (cueIframeRef.current) {
       sendCueYtCmd(cueIframeRef.current, 'mute');
       sendCueYtCmd(cueIframeRef.current, 'pauseVideo');

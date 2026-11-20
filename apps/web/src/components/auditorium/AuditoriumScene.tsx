@@ -348,6 +348,41 @@ function sendYtCmd(iframe: HTMLIFrameElement | null, func: string, args: unknown
   iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
 }
 
+function KaraokeScreenScoreOverlay({
+  scoreCard,
+}: {
+  scoreCard?: { score: number; trackTitle?: string } | null;
+}) {
+  if (!scoreCard) return null;
+  const rank =
+    scoreCard.score >= 95 ? 'S+' : scoreCard.score >= 90 ? 'S' : scoreCard.score >= 82 ? 'A' : 'B';
+  const praise =
+    scoreCard.score >= 95
+      ? '🔥 Tuyệt đỉnh sân khấu! Cả phòng vỗ tay rần rần!'
+      : scoreCard.score >= 90
+        ? '✨ Giọng hát cực cháy! Sân khấu bùng nổ!'
+        : scoreCard.score >= 82
+          ? '👏 Hát rất hay và đầy cảm xúc!'
+          : '🎶 Phong độ ổn định! Quẩy tiếp bài sau nào!';
+
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-black/55 backdrop-blur-[2px]">
+      <div className="w-[78%] max-w-[360px] rounded-2xl border-2 border-fuchsia-400/75 bg-gradient-to-br from-fuchsia-950/95 via-stone-950/95 to-indigo-950/95 px-5 py-4 text-center shadow-2xl">
+        <div className="text-[11px] font-bold uppercase tracking-widest text-fuchsia-300">
+          🎤 Karaoke Score • Hạng {rank}
+        </div>
+        <div className="mt-1 bg-gradient-to-r from-amber-300 via-pink-300 to-cyan-300 bg-clip-text text-5xl font-black text-transparent">
+          {scoreCard.score} <span className="text-2xl text-fuchsia-200/80">/ 100</span>
+        </div>
+        <div className="mt-1.5 text-xs font-semibold text-white">{praise}</div>
+        {scoreCard.trackTitle && (
+          <div className="mt-1 truncate text-[10px] text-stone-300">{scoreCard.trackTitle}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function StageYouTubeCurtains({
   transitionVisual,
   concert,
@@ -359,6 +394,8 @@ function StageYouTubeCurtains({
   venueStyle = 'CHAMBER',
   canAutoAdvance = false,
   onAutoAdvanceNext,
+  onKaraokeSongEnded,
+  karaokeScoreCard,
   ytIframeRef,
   onAutoplayBlocked,
 }: {
@@ -382,6 +419,8 @@ function StageYouTubeCurtains({
   venueStyle?: VenueStyle;
   canAutoAdvance?: boolean;
   onAutoAdvanceNext?: (expectedIndex: number) => void;
+  onKaraokeSongEnded?: (expectedIndex: number, shouldAutoAdvance: boolean) => void;
+  karaokeScoreCard?: { score: number; trackTitle?: string } | null;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
 }) {
@@ -497,9 +536,29 @@ function StageYouTubeCurtains({
           if (isPlaying && localIframeRef.current) {
             const latestConcert = realtimeStore.room?.concert ?? concert;
             const playbackMode = latestConcert.playbackMode ?? 'REPEAT_ONE';
-            if (playbackMode === 'QUEUE_NEXT' && latestConcert.setlist.length > 1) {
-              const nowMs = performance.now();
-              const idx = latestConcert.currentSetlistIndex;
+            const shouldAdvance = playbackMode === 'QUEUE_NEXT' && latestConcert.setlist.length > 1;
+            const nowMs = performance.now();
+            const idx = latestConcert.currentSetlistIndex;
+
+            if (venueStyle === 'KARAOKE' && onKaraokeSongEnded) {
+              if (
+                canAutoAdvance &&
+                (lastAutoAdvanceRef.current.index !== idx || nowMs - lastAutoAdvanceRef.current.at > 6500)
+              ) {
+                lastAutoAdvanceRef.current = { index: idx, at: nowMs };
+                onKaraokeSongEnded(idx, shouldAdvance);
+              }
+              if (!shouldAdvance) {
+                const raw = realtimeStore.getSyncedPlaybackSec(latestConcert);
+                const dur = ytDurationRef.current;
+                const mod = dur > 1 ? raw % dur : 0;
+                const loopTarget = dur > 1 && dur - mod >= 3 ? mod : 0;
+                ytTimeRef.current = loopTarget;
+                lastSeekAtRef.current = performance.now();
+                sendYtCmd(localIframeRef.current, 'seekTo', [loopTarget, true]);
+                sendYtCmd(localIframeRef.current, 'playVideo');
+              }
+            } else if (shouldAdvance) {
               if (
                 canAutoAdvance &&
                 (lastAutoAdvanceRef.current.index !== idx || nowMs - lastAutoAdvanceRef.current.at > 3000)
@@ -769,6 +828,7 @@ function StageYouTubeCurtains({
                 </div>
               </div>
             )}
+            <KaraokeScreenScoreOverlay scoreCard={karaokeScoreCard} />
           </div>
         </Html>
       )}
@@ -795,6 +855,7 @@ function KaraokeBackLyricsScreen({
   concert,
   youtubeVideoId,
   isPlaying,
+  karaokeScoreCard,
 }: {
   transitionVisual?: {
     active: boolean;
@@ -810,6 +871,7 @@ function KaraokeBackLyricsScreen({
   concert: RoomDTO['concert'];
   youtubeVideoId?: string;
   isPlaying: boolean;
+  karaokeScoreCard?: { score: number; trackTitle?: string } | null;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ytActiveVisual, setYtActiveVisual] = useState(false);
@@ -1025,6 +1087,7 @@ function KaraokeBackLyricsScreen({
                 </div>
               </div>
             )}
+            <KaraokeScreenScoreOverlay scoreCard={karaokeScoreCard} />
           </div>
         </Html>
       )}
@@ -2154,6 +2217,8 @@ export function AuditoriumScene({
   musicMuted = false,
   canAutoAdvance = false,
   onAutoAdvanceNext,
+  onKaraokeSongEnded,
+  karaokeScoreCard,
   ytIframeRef,
   onAutoplayBlocked,
   onSelectSeat,
@@ -2186,6 +2251,8 @@ export function AuditoriumScene({
   musicMuted?: boolean;
   canAutoAdvance?: boolean;
   onAutoAdvanceNext?: (expectedIndex: number) => void;
+  onKaraokeSongEnded?: (expectedIndex: number, shouldAutoAdvance: boolean) => void;
+  karaokeScoreCard?: { score: number; trackTitle?: string } | null;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
   onSelectSeat: (seatId: string) => void;
@@ -2291,6 +2358,8 @@ export function AuditoriumScene({
         venueStyle={venueStyle}
         canAutoAdvance={canAutoAdvance}
         onAutoAdvanceNext={onAutoAdvanceNext}
+        onKaraokeSongEnded={onKaraokeSongEnded}
+        karaokeScoreCard={karaokeScoreCard}
         ytIframeRef={ytIframeRef}
         onAutoplayBlocked={onAutoplayBlocked}
       />
@@ -2301,6 +2370,7 @@ export function AuditoriumScene({
           concert={room.concert}
           youtubeVideoId={youtubeVideoId}
           isPlaying={isYouTubePlaying}
+          karaokeScoreCard={karaokeScoreCard}
         />
       )}
 

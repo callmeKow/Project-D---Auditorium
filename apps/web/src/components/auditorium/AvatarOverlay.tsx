@@ -54,11 +54,27 @@ export function AvatarOverlay({
 }) {
   const flowerGroupRef = useRef<THREE.Group>(null);
   const flowerMeshRefs = useRef<(THREE.Group | null)[]>([]);
+  const paddleGroupRef = useRef<THREE.Group>(null);
 
   useFrame(() => {
+    const nowMs = performance.now();
+
+    const pg = paddleGroupRef.current;
+    if (pg) {
+      const pointActive = Boolean(entry.pointScore && entry.pointUntil && entry.pointUntil > nowMs);
+      pg.visible = pointActive;
+      if (pointActive && entry.pointAt) {
+        const elapsed = Math.max(0, (nowMs - entry.pointAt) / 1000);
+        const popScale = elapsed < 0.18 ? elapsed / 0.18 : 1;
+        const sway = Math.sin(elapsed * 5.2) * 0.14;
+        pg.position.set(0.34, 0.92 + Math.sin(elapsed * 3.5) * 0.04, 0.18);
+        pg.rotation.set(0, 0, -0.15 + sway);
+        pg.scale.setScalar(popScale);
+      }
+    }
+
     const fg = flowerGroupRef.current;
     if (!fg) return;
-    const nowMs = performance.now();
     const active = entry.flowerBurstUntil > nowMs && entry.flowerBurstAt > 0;
     fg.visible = active;
     if (!active) return;
@@ -83,10 +99,46 @@ export function AvatarOverlay({
     }
   });
 
-  const showReaction = entry.lastReaction && performance.now() < entry.reactionUntil;
+  const nowMs = performance.now();
+  const showReaction = entry.lastReaction && nowMs < entry.reactionUntil;
+  const showPointPaddle = Boolean(entry.pointScore && entry.pointUntil && nowMs < entry.pointUntil);
 
   return (
     <>
+      {/* 3D Judge Scoreboard Paddle held up when user types /point:[1-10] in chat */}
+      <group ref={paddleGroupRef} visible={false} position={[0.34, 0.92, 0.18]}>
+        {/* Handle Stick */}
+        <mesh position={[0, 0.16, 0]}>
+          <cylinderGeometry args={[0.016, 0.018, 0.36, 8]} />
+          <meshStandardMaterial color="#f59e0b" metalness={0.75} roughness={0.25} />
+        </mesh>
+        {/* Paddle Board */}
+        <mesh position={[0, 0.48, 0]}>
+          <boxGeometry args={[0.36, 0.36, 0.035]} />
+          <meshStandardMaterial
+            color="#1e1b4b"
+            emissive={(entry.pointScore ?? 0) >= 9 ? '#ec4899' : '#6366f1'}
+            emissiveIntensity={0.45}
+            roughness={0.25}
+          />
+        </mesh>
+        {/* Gold Rim */}
+        <mesh position={[0, 0.48, 0]}>
+          <boxGeometry args={[0.39, 0.39, 0.025]} />
+          <meshStandardMaterial color="#fbbf24" emissive="#f59e0b" emissiveIntensity={0.5} />
+        </mesh>
+        {showPointPaddle && (
+          <Html position={[0, 0.48, 0.03]} center distanceFactor={8} style={{ pointerEvents: 'none' }}>
+            <div className="flex h-11 w-11 flex-col items-center justify-center rounded-xl border-2 border-amber-300 bg-gradient-to-br from-fuchsia-700 via-indigo-900 to-stone-950 shadow-xl select-none">
+              <span className="text-[7px] font-bold uppercase leading-none tracking-wider text-amber-200">
+                POINT
+              </span>
+              <span className="text-lg font-black leading-tight text-white">{entry.pointScore}</span>
+            </div>
+          </Html>
+        )}
+      </group>
+
       <group ref={flowerGroupRef} visible={false}>
         {FLOWER_PARTICLES.map((p, i) => (
           <group

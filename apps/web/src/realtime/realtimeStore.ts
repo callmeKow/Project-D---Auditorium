@@ -26,6 +26,9 @@ export interface AvatarRuntimeEntry extends AvatarTransformPayload {
   reactionUntil: number;
   flowerBurstAt: number;
   flowerBurstUntil: number;
+  pointScore?: number;
+  pointAt?: number;
+  pointUntil?: number;
 }
 
 type Listener = () => void;
@@ -269,7 +272,7 @@ class RealtimeRoomStore {
             const currentTitle = this.room?.concert.setlist[this.room.concert.currentSetlistIndex]?.title;
             this.lastKaraokeScore = {
               score: msg.karaokeScore,
-              until: performance.now() + 5500,
+              until: performance.now() + 6000,
               trackTitle: currentTitle,
             };
           }
@@ -277,6 +280,31 @@ class RealtimeRoomStore {
             if (av.role !== 'ARTIST') av.animation = 'CLAP';
           }
           audioEngine.playReactionSound('APPLAUSE');
+          this.emit();
+          break;
+        }
+
+        case 'POINT_CARD': {
+          const av = this.avatars.get(msg.userId);
+          if (av) {
+            const now = performance.now();
+            av.pointScore = msg.score;
+            av.pointAt = now;
+            av.pointUntil = now + 5000;
+            // Raise arm to hold up the score paddle unless actively dancing
+            if (
+              av.animation !== 'DANCE' &&
+              av.animation !== 'DANCE_2' &&
+              av.animation !== 'DANCE_3' &&
+              av.animation !== 'DANCE_4' &&
+              av.animation !== 'DANCE_5'
+            ) {
+              av.animation = 'WAVE';
+              av.lastReaction = 'WAVE';
+              av.reactionUntil = now + 2600;
+            }
+          }
+          audioEngine.playReactionSound(msg.score >= 9 ? 'CHEER' : 'CLAP');
           this.emit();
           break;
         }

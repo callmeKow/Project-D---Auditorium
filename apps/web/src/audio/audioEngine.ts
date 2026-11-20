@@ -1057,6 +1057,60 @@ class AudioEngine {
     this.remoteAnalyser = null;
   }
 
+  private karaokeVocalStats = {
+    totalSamples: 0,
+    singingSamples: 0,
+    rmsSum: 0,
+    rmsSqSum: 0,
+  };
+
+  /** Resets mic vocal tracking at the start of a new Karaoke song. */
+  resetKaraokeVocalSession() {
+    this.karaokeVocalStats = {
+      totalSamples: 0,
+      singingSamples: 0,
+      rmsSum: 0,
+      rmsSqSum: 0,
+    };
+  }
+
+  /** Samples current Mic 1 / Mic 2 vocal energy to evaluate singing participation & steadiness. */
+  sampleKaraokeVocalFrame() {
+    const m1 = this.readMeter();
+    const m2 = this.readMeterMic2();
+    const activeRms = Math.max(m1.rms, m2.rms);
+    this.karaokeVocalStats.totalSamples += 1;
+    if (activeRms > 0.012) {
+      this.karaokeVocalStats.singingSamples += 1;
+      this.karaokeVocalStats.rmsSum += activeRms;
+      this.karaokeVocalStats.rmsSqSum += activeRms * activeRms;
+    }
+  }
+
+  /**
+   * Computes a 75–100 Karaoke score combining real Mic vocal steadiness/activity
+   * with a fun entertainment baseline so every performance feels rewarding.
+   */
+  computeKaraokeScore(): number {
+    const { totalSamples, singingSamples, rmsSum, rmsSqSum } = this.karaokeVocalStats;
+    if (singingSamples < 6 || totalSamples === 0) {
+      // No active mic singing detected -> fun entertainment baseline (75..86)
+      return 75 + Math.floor(Math.random() * 12);
+    }
+
+    const singingRatio = Math.min(1, singingSamples / Math.max(12, totalSamples * 0.65));
+    const meanRms = rmsSum / singingSamples;
+    const variance = Math.max(0, rmsSqSum / singingSamples - meanRms * meanRms);
+    const stdDev = Math.sqrt(variance);
+    const steadiness = Math.max(0, 1 - stdDev / Math.max(0.02, meanRms));
+
+    const activityPts = singingRatio * 11; // 0..11
+    const steadinessPts = steadiness * 8; // 0..8
+    const entertainmentBonus = Math.floor(Math.random() * 5); // 0..4
+    const raw = Math.round(77 + activityPts + steadinessPts + entertainmentBonus);
+    return Math.max(75, Math.min(100, raw));
+  }
+
   // Zero-allocation per-frame Bass & Beat reader for 3D Concert Stage lighting
   readBeatBass(concertPulseFallback: boolean, elapsedSec: number): {
     bass: number;
