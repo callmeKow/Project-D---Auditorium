@@ -441,6 +441,8 @@ function StageYouTubeCurtains({
   const openProgressRef = useRef(0);
   const [screenVisible, setScreenVisible] = useState(false);
   const [ytActiveVisual, setYtActiveVisual] = useState(false);
+  const [ytSynced, setYtSynced] = useState(false);
+  const ytSyncedRef = useRef(false);
   const ytStateRef = useRef<number>(-1);
   const ytTimeRef = useRef<number>(0);
   const ytDurationRef = useRef<number>(0);
@@ -448,6 +450,13 @@ function StageYouTubeCurtains({
   const lastSeekAtRef = useRef<number>(0);
   const loadedAtRef = useRef<number>(performance.now());
   const lastAutoAdvanceRef = useRef<{ index: number; at: number }>({ index: -1, at: 0 });
+
+  const setSyncedState = (val: boolean) => {
+    if (ytSyncedRef.current !== val) {
+      ytSyncedRef.current = val;
+      setYtSynced(val);
+    }
+  };
 
   // Collect up to 4 unique YouTube tracks from Setlist (active + next 3 upcoming) to pre-buffer in RAM
   const preloadedVideoIds: string[] = [];
@@ -491,6 +500,7 @@ function StageYouTubeCurtains({
     localIframeRef.current = activeEl;
     if (ytIframeRef) ytIframeRef.current = activeEl;
     setYtActiveVisual(false);
+    setSyncedState(false);
     ytStateRef.current = -1;
     ytTimeRef.current = 0;
     ytDurationRef.current = 0;
@@ -499,7 +509,10 @@ function StageYouTubeCurtains({
   }, [youtubeVideoId, ytIframeRef]);
 
   useEffect(() => {
-    if (!isPlaying) setYtActiveVisual(false);
+    if (!isPlaying) {
+      setYtActiveVisual(false);
+      setSyncedState(false);
+    }
   }, [isPlaying]);
 
   useEffect(() => {
@@ -531,13 +544,18 @@ function StageYouTubeCurtains({
       if (typeof (parsed.info as { muted?: boolean }).muted === 'boolean') {
         ytMutedRef.current = Boolean((parsed.info as { muted?: boolean }).muted);
       }
+      if (typeof parsed.info.currentTime === 'number') {
+        ytTimeRef.current = parsed.info.currentTime;
+      }
       if (typeof parsed.info.playerState === 'number') {
         const st = parsed.info.playerState;
         ytStateRef.current = st;
         if (st === 1) {
-          setYtActiveVisual(true);
-          if (!audienceMuted && !ytMutedRef.current) {
-            onAutoplayBlocked?.(false);
+          if (ytSyncedRef.current) {
+            setYtActiveVisual(true);
+            if (!audienceMuted && !ytMutedRef.current) {
+              onAutoplayBlocked?.(false);
+            }
           }
         } else if (st === 0) {
           setYtActiveVisual(false);
@@ -589,26 +607,50 @@ function StageYouTubeCurtains({
           setYtActiveVisual(false);
         }
       }
-      if (typeof parsed.info.currentTime === 'number') {
-        ytTimeRef.current = parsed.info.currentTime;
+
+      // Sync gate: keep video hidden & muted while playing at 0:00 until seekTo reaches room playback time
+      if (isPlaying && ytStateRef.current === 1 && !ytSyncedRef.current) {
+        const latestConcert = realtimeStore.room?.concert ?? concert;
+        const targetSec = getLoopAwareSyncSec(latestConcert);
+        const dur = ytDurationRef.current;
+        const rawDiff = Math.abs(ytTimeRef.current - targetSec);
+        const circularDiff = dur > 1 ? Math.min(rawDiff, dur - rawDiff) : rawDiff;
+        const inSyncNow = targetSec <= 1.5 || circularDiff <= 2.5;
+        if (inSyncNow) {
+          setSyncedState(true);
+          setYtActiveVisual(true);
+          if (audienceMuted || musicMuted || musicVolume === 0) {
+            sendYtCmd(activeIframe, 'mute');
+          } else {
+            sendYtCmd(activeIframe, 'unMute');
+            sendYtCmd(activeIframe, 'setVolume', [musicVolume]);
+            onAutoplayBlocked?.(false);
+          }
+        } else {
+          if (!ytMutedRef.current) sendYtCmd(activeIframe, 'mute');
+          if (performance.now() - lastSeekAtRef.current > 700) {
+            lastSeekAtRef.current = performance.now();
+            sendYtCmd(activeIframe, 'seekTo', [targetSec, true]);
+          }
+        }
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audienceMuted, isPlaying, youtubeVideoId, onAutoplayBlocked]);
+  }, [audienceMuted, musicMuted, musicVolume, isPlaying, youtubeVideoId, onAutoplayBlocked]);
 
   // Sync YouTube music volume & mute from Karaoke mixer
   useEffect(() => {
     const iframe = localIframeRef.current;
     if (!iframe || !youtubeVideoId || !screenVisible) return;
-    if (audienceMuted || musicMuted || musicVolume === 0) {
+    if (!ytSyncedRef.current || audienceMuted || musicMuted || musicVolume === 0) {
       sendYtCmd(iframe, 'mute');
     } else {
       sendYtCmd(iframe, 'unMute');
       sendYtCmd(iframe, 'setVolume', [musicVolume]);
     }
-  }, [musicVolume, musicMuted, audienceMuted, youtubeVideoId, screenVisible]);
+  }, [musicVolume, musicMuted, audienceMuted, youtubeVideoId, screenVisible, ytSynced]);
 
   // Sync play/pause/seek when active track, epoch, or playing state changes
   useEffect(() => {
@@ -616,16 +658,22 @@ function StageYouTubeCurtains({
     if (!iframe || !youtubeVideoId || !screenVisible) return;
     const latestConcert = realtimeStore.room?.concert ?? concert;
     const targetSec = getLoopAwareSyncSec(latestConcert);
-    if (audienceMuted || musicMuted || musicVolume === 0) {
-      sendYtCmd(iframe, 'mute');
-    } else {
-      sendYtCmd(iframe, 'unMute');
-      sendYtCmd(iframe, 'setVolume', [musicVolume]);
-    }
+    const needsSeek = Math.abs(ytTimeRef.current - targetSec) > 1.8 && targetSec > 1.5;
     if (isPlaying) {
-      if (Math.abs(ytTimeRef.current - targetSec) > 1.2) {
+      if (needsSeek) {
+        setSyncedState(false);
+        setYtActiveVisual(false);
+        sendYtCmd(iframe, 'mute');
         lastSeekAtRef.current = performance.now();
         sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+      } else {
+        setSyncedState(true);
+        if (audienceMuted || musicMuted || musicVolume === 0) {
+          sendYtCmd(iframe, 'mute');
+        } else {
+          sendYtCmd(iframe, 'unMute');
+          sendYtCmd(iframe, 'setVolume', [musicVolume]);
+        }
       }
       sendYtCmd(iframe, 'playVideo');
     } else {
@@ -656,9 +704,8 @@ function StageYouTubeCurtains({
 
       if (
         ytStateRef.current === 1 &&
-        ytTimeRef.current > 0 &&
         circularDiff > 3.0 &&
-        now - lastSeekAtRef.current > 3500
+        now - lastSeekAtRef.current > (ytSyncedRef.current ? 3500 : 900)
       ) {
         lastSeekAtRef.current = now;
         sendYtCmd(iframe, 'seekTo', [targetSec, true]);
@@ -668,7 +715,12 @@ function StageYouTubeCurtains({
       const hasActivation =
         (navigator as unknown as { userActivation?: { hasBeenActive?: boolean } }).userActivation?.hasBeenActive ?? false;
 
-      if (!audienceMuted && !musicMuted && musicVolume > 0) {
+      if (!ytSyncedRef.current) {
+        if (!ytMutedRef.current) sendYtCmd(iframe, 'mute');
+        if (st !== 1 && st !== 3) {
+          sendYtCmd(iframe, 'playVideo');
+        }
+      } else if (!audienceMuted && !musicMuted && musicVolume > 0) {
         if (st === 1 && ytMutedRef.current) {
           if (hasActivation) {
             sendYtCmd(iframe, 'unMute');
@@ -779,12 +831,18 @@ function StageYouTubeCurtains({
                     if (isActive) {
                       const syncSec = getLoopAwareSyncSec(realtimeStore.room?.concert ?? concert);
                       lastSeekAtRef.current = performance.now();
-                      if (syncSec > 1) sendYtCmd(iframe, 'seekTo', [syncSec, true]);
-                      if (audienceMuted || musicMuted || musicVolume === 0) {
+                      if (syncSec > 1.5) {
+                        setSyncedState(false);
                         sendYtCmd(iframe, 'mute');
+                        sendYtCmd(iframe, 'seekTo', [syncSec, true]);
                       } else {
-                        sendYtCmd(iframe, 'unMute');
-                        sendYtCmd(iframe, 'setVolume', [musicVolume]);
+                        setSyncedState(true);
+                        if (audienceMuted || musicMuted || musicVolume === 0) {
+                          sendYtCmd(iframe, 'mute');
+                        } else {
+                          sendYtCmd(iframe, 'unMute');
+                          sendYtCmd(iframe, 'setVolume', [musicVolume]);
+                        }
                       }
                       if (isPlaying) {
                         sendYtCmd(iframe, 'playVideo');
@@ -819,7 +877,7 @@ function StageYouTubeCurtains({
                     transitionVisual?.active && vid === transitionVisual.targetVideoId && !isActive
                       ? 'z-20 opacity-100'
                       : isActive
-                        ? ytActiveVisual && isPlaying
+                        ? ytActiveVisual && ytSynced && isPlaying
                           ? 'z-10 opacity-100'
                           : isPausedState
                             ? 'z-10 opacity-55'
@@ -829,6 +887,14 @@ function StageYouTubeCurtains({
                 />
               );
             })}
+            {isPlaying && !ytSynced && !isPausedState && (
+              <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-stone-950/95">
+                <div className="h-7 w-7 animate-spin rounded-full border-2 border-amber-400/30 border-t-amber-400" />
+                <div className="text-xs font-semibold tracking-wider text-amber-200/90">
+                  Đang đồng bộ bài hát...
+                </div>
+              </div>
+            )}
             {isPausedState && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/35">
                 <div className="rounded-full border border-amber-400/50 bg-stone-950/85 px-4 py-1.5 text-xs font-bold tracking-wider text-amber-300 shadow-xl">
@@ -883,12 +949,21 @@ function KaraokeBackLyricsScreen({
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [ytActiveVisual, setYtActiveVisual] = useState(false);
+  const [ytSynced, setYtSynced] = useState(false);
+  const ytSyncedRef = useRef(false);
   const [facingRearWall, setFacingRearWall] = useState(false);
   const rearCamDir = useMemo(() => new THREE.Vector3(), []);
   const ytTimeRef = useRef(0);
   const ytDurationRef = useRef(0);
   const ytStateRef = useRef(-1);
   const lastSeekAtRef = useRef(0);
+
+  const setSyncedState = (val: boolean) => {
+    if (ytSyncedRef.current !== val) {
+      ytSyncedRef.current = val;
+      setYtSynced(val);
+    }
+  };
 
   const isPausedState = concert.state === 'PAUSED' || concert.state === 'INTERMISSION';
   const showVideo = Boolean(youtubeVideoId && (isPlaying || isPausedState));
@@ -909,6 +984,7 @@ function KaraokeBackLyricsScreen({
 
   useEffect(() => {
     setYtActiveVisual(false);
+    setSyncedState(false);
     ytTimeRef.current = 0;
     ytDurationRef.current = 0;
     ytStateRef.current = -1;
@@ -916,7 +992,10 @@ function KaraokeBackLyricsScreen({
   }, [youtubeVideoId]);
 
   useEffect(() => {
-    if (!isPlaying) setYtActiveVisual(false);
+    if (!isPlaying) {
+      setYtActiveVisual(false);
+      setSyncedState(false);
+    }
   }, [isPlaying]);
 
   useEffect(() => {
@@ -941,7 +1020,9 @@ function KaraokeBackLyricsScreen({
         const st = parsed.info.playerState;
         ytStateRef.current = st;
         if (st === 1) {
-          setYtActiveVisual(true);
+          if (ytSyncedRef.current) {
+            setYtActiveVisual(true);
+          }
         } else if (st === 0 && isPlaying) {
           setYtActiveVisual(false);
           const latestConcert = realtimeStore.room?.concert ?? concert;
@@ -956,6 +1037,21 @@ function KaraokeBackLyricsScreen({
           setYtActiveVisual(false);
         }
       }
+
+      if (isPlaying && ytStateRef.current === 1 && !ytSyncedRef.current) {
+        const latestConcert = realtimeStore.room?.concert ?? concert;
+        const targetSec = getLoopAwareSyncSec(latestConcert);
+        const dur = ytDurationRef.current;
+        const rawDiff = Math.abs(ytTimeRef.current - targetSec);
+        const circularDiff = dur > 1 ? Math.min(rawDiff, dur - rawDiff) : rawDiff;
+        if (targetSec <= 1.5 || circularDiff <= 2.5) {
+          setSyncedState(true);
+          setYtActiveVisual(true);
+        } else if (performance.now() - lastSeekAtRef.current > 700) {
+          lastSeekAtRef.current = performance.now();
+          sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+        }
+      }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -968,9 +1064,13 @@ function KaraokeBackLyricsScreen({
     const targetSec = getLoopAwareSyncSec(latestConcert);
     sendYtCmd(iframe, 'mute');
     if (isPlaying) {
-      if (Math.abs(ytTimeRef.current - targetSec) > 1.2) {
+      if (Math.abs(ytTimeRef.current - targetSec) > 1.8 && targetSec > 1.5) {
+        setSyncedState(false);
+        setYtActiveVisual(false);
         lastSeekAtRef.current = performance.now();
         sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+      } else {
+        setSyncedState(true);
       }
       sendYtCmd(iframe, 'playVideo');
     } else {
@@ -1048,9 +1148,12 @@ function KaraokeBackLyricsScreen({
                 }, 400);
                 sendYtCmd(iframe, 'mute');
                 const targetSec = getLoopAwareSyncSec(realtimeStore.room?.concert ?? concert);
-                if (targetSec > 1) {
+                if (targetSec > 1.5) {
+                  setSyncedState(false);
                   lastSeekAtRef.current = performance.now();
                   sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+                } else {
+                  setSyncedState(true);
                 }
                 if (isPlaying) {
                   sendYtCmd(iframe, 'playVideo');
@@ -1070,9 +1173,17 @@ function KaraokeBackLyricsScreen({
                   : undefined
               }
               className={`pointer-events-none absolute left-0 top-0 h-[600px] w-[640px] -translate-y-[120px] border-0 transition-opacity duration-150 ${
-                ytActiveVisual && isPlaying ? 'opacity-100' : isPausedState ? 'opacity-55' : 'opacity-0'
+                ytActiveVisual && ytSynced && isPlaying ? 'opacity-100' : isPausedState ? 'opacity-55' : 'opacity-0'
               }`}
             />
+            {isPlaying && !ytSynced && !isPausedState && (
+              <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-stone-950/95">
+                <div className="h-7 w-7 animate-spin rounded-full border-2 border-fuchsia-400/30 border-t-fuchsia-400" />
+                <div className="text-xs font-semibold tracking-wider text-fuchsia-200/90">
+                  Đang đồng bộ bài hát...
+                </div>
+              </div>
+            )}
             {transitionVisual?.active &&
               transitionVisual.targetVideoId &&
               transitionVisual.targetVideoId !== youtubeVideoId && (

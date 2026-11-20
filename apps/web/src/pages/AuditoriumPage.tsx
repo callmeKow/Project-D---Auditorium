@@ -177,6 +177,7 @@ export function AuditoriumPage() {
   const [dragTrackIdx, setDragTrackIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [fullscreenLyricsOpen, setFullscreenLyricsOpen] = useState(false);
+  const [fullscreenSynced, setFullscreenSynced] = useState(false);
   const fullscreenIframeRef = useRef<HTMLIFrameElement | null>(null);
   const actionTimersRef = useRef<Set<number>>(new Set());
   const transportLockRef = useRef<{ action: TransportAction; startedAt: number } | null>(null);
@@ -703,12 +704,47 @@ export function AuditoriumPage() {
   }, [fullscreenLyricsOpen, isKaraoke]);
 
   useEffect(() => {
-    if (!fullscreenLyricsOpen || !isKaraoke || !currentSong?.youtubeVideoId || !room) return;
+    if (!fullscreenLyricsOpen || !isKaraoke || !currentSong?.youtubeVideoId || !room) {
+      setFullscreenSynced(false);
+      return;
+    }
+    const initialSec = realtimeStore.getSyncedPlaybackSec(room.concert);
+    setFullscreenSynced(initialSec <= 1.5);
+    let lastSeekAt = 0;
+
+    const onMsg = (ev: MessageEvent) => {
+      if (typeof ev.data !== 'string') return;
+      const win = fullscreenIframeRef.current?.contentWindow;
+      if (!win || ev.source !== win) return;
+      let parsed: { event?: string; info?: { currentTime?: number; playerState?: number; duration?: number } };
+      try {
+        parsed = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (parsed?.event !== 'infoDelivery' || !parsed.info) return;
+      if (typeof parsed.info.currentTime === 'number') {
+        const latestConcert = realtimeStore.room?.concert ?? room.concert;
+        const target = realtimeStore.getSyncedPlaybackSec(latestConcert);
+        const dur = typeof parsed.info.duration === 'number' && parsed.info.duration > 1 ? parsed.info.duration : 0;
+        const modTarget = dur > 1 ? target % dur : target;
+        const diff = Math.abs(parsed.info.currentTime - modTarget);
+        if (modTarget <= 1.5 || diff <= 2.5) {
+          setFullscreenSynced(true);
+        } else if (performance.now() - lastSeekAt > 700) {
+          lastSeekAt = performance.now();
+          win.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [modTarget, true] }), '*');
+        }
+      }
+    };
+    window.addEventListener('message', onMsg);
+
     const syncOverlay = () => {
       const win = fullscreenIframeRef.current?.contentWindow;
       if (!win) return;
       win.postMessage(JSON.stringify({ event: 'command', func: 'mute', args: '' }), '*');
-      const sec = realtimeStore.getSyncedPlaybackSec(room.concert);
+      const sec = realtimeStore.getSyncedPlaybackSec(realtimeStore.room?.concert ?? room.concert);
+      lastSeekAt = performance.now();
       win.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [sec, true] }), '*');
       win.postMessage(
         JSON.stringify({ event: 'command', func: isCurrentVideoPlaying ? 'playVideo' : 'pauseVideo', args: '' }),
@@ -717,7 +753,10 @@ export function AuditoriumPage() {
     };
     syncOverlay();
     const id = window.setInterval(syncOverlay, 2500);
-    return () => clearInterval(id);
+    return () => {
+      window.removeEventListener('message', onMsg);
+      clearInterval(id);
+    };
   }, [
     fullscreenLyricsOpen,
     isKaraoke,
@@ -834,10 +873,16 @@ export function AuditoriumPage() {
                     onLoad={() => {
                       const win = fullscreenIframeRef.current?.contentWindow;
                       if (!win || !room) return;
+                      win.postMessage(JSON.stringify({ event: 'listening' }), '*');
+                      window.setTimeout(() => {
+                        win.postMessage(JSON.stringify({ event: 'listening' }), '*');
+                      }, 400);
                       win.postMessage(JSON.stringify({ event: 'command', func: 'mute', args: '' }), '*');
                       const sec = realtimeStore.getSyncedPlaybackSec(room.concert);
-                      if (sec > 0.5) {
+                      if (sec > 1.5) {
                         win.postMessage(JSON.stringify({ event: 'command', func: 'seekTo', args: [sec, true] }), '*');
+                      } else {
+                        setFullscreenSynced(true);
                       }
                       win.postMessage(
                         JSON.stringify({
@@ -859,8 +904,18 @@ export function AuditoriumPage() {
                           }
                         : undefined
                     }
-                    className="pointer-events-none h-full w-full border-0 transition-opacity duration-150"
+                    className={`pointer-events-none h-full w-full border-0 transition-opacity duration-150 ${
+                      fullscreenSynced || !isCurrentVideoPlaying ? 'opacity-100' : 'opacity-0'
+                    }`}
                   />
+                  {isCurrentVideoPlaying && !fullscreenSynced && (
+                    <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-stone-950/95">
+                      <div className="h-9 w-9 animate-spin rounded-full border-2 border-fuchsia-400/30 border-t-fuchsia-400" />
+                      <div className="text-sm font-semibold tracking-wider text-fuchsia-200/90">
+                        Đang đồng bộ bài hát...
+                      </div>
+                    </div>
+                  )}
                   {transitionVisual?.active &&
                     transitionVisual.targetVideoId &&
                     transitionVisual.targetVideoId !== currentSong.youtubeVideoId && (
