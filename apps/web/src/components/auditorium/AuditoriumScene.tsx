@@ -14,6 +14,7 @@ import {
 import { realtimeStore, type AvatarRuntimeEntry } from '../../realtime/realtimeStore';
 import { audioEngine } from '../../audio/audioEngine';
 import { RiggedAudienceAvatar } from './RiggedAudienceAvatar';
+import { SyncedMediaPlayer } from './SyncedMediaPlayer';
 
 export type CameraMode = 'AUDIENCE_ORBIT' | 'STAGE_VIEW' | 'SEAT_POV' | 'ROOM_OVERVIEW' | 'KARAOKE_STAGE_POV';
 
@@ -395,6 +396,8 @@ function StageYouTubeCurtains({
   transitionVisual,
   concert,
   youtubeVideoId,
+  mediaUrl,
+  mediaType,
   isPlaying,
   audienceMuted,
   musicVolume = 80,
@@ -405,6 +408,7 @@ function StageYouTubeCurtains({
   onKaraokeSongEnded,
   karaokeScoreCard,
   ytIframeRef,
+  mediaElRef,
   onAutoplayBlocked,
 }: {
   transitionVisual?: {
@@ -420,6 +424,8 @@ function StageYouTubeCurtains({
   } | null;
   concert: RoomDTO['concert'];
   youtubeVideoId?: string;
+  mediaUrl?: string;
+  mediaType?: 'AUDIO' | 'VIDEO';
   isPlaying: boolean;
   audienceMuted: boolean;
   musicVolume?: number;
@@ -430,6 +436,7 @@ function StageYouTubeCurtains({
   onKaraokeSongEnded?: (expectedIndex: number, shouldAutoAdvance: boolean) => void;
   karaokeScoreCard?: { score: number; trackTitle?: string } | null;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
+  mediaElRef?: React.MutableRefObject<HTMLMediaElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
 }) {
   const leftCurtainRef = useRef<THREE.Mesh>(null);
@@ -493,7 +500,8 @@ function StageYouTubeCurtains({
   };
 
   const isPausedState = concert.state === 'PAUSED' || concert.state === 'INTERMISSION';
-  const shouldOpen = Boolean(youtubeVideoId && (isPlaying || isPausedState));
+  const hasScreenVideo = Boolean(youtubeVideoId || (mediaUrl && mediaType === 'VIDEO'));
+  const shouldOpen = Boolean(hasScreenVideo && (isPlaying || isPausedState));
 
   useEffect(() => {
     const activeEl = youtubeVideoId ? (preloadMapRef.current.get(youtubeVideoId) ?? null) : null;
@@ -760,7 +768,7 @@ function StageYouTubeCurtains({
       rightCurtainRef.current.scale.x = THREE.MathUtils.lerp(1, 0.22, p);
     }
 
-    const shouldShowScreen = Boolean(youtubeVideoId) && p > 0.12;
+    const shouldShowScreen = hasScreenVideo && p > 0.12;
     if (shouldShowScreen !== screenVisible) {
       setScreenVisible(shouldShowScreen);
     }
@@ -789,8 +797,8 @@ function StageYouTubeCurtains({
         <meshStandardMaterial color="#09090b" roughness={0.8} />
       </mesh>
 
-      {/* Embedded YouTube Screen behind transparent WebGL Canvas (occlude="blending" puts characters/stage/seats strictly IN FRONT of video) */}
-      {youtubeVideoId && screenVisible && (
+      {/* Embedded YouTube / Uploaded Video Screen behind transparent WebGL Canvas (occlude="blending" puts characters/stage/seats strictly IN FRONT of video) */}
+      {hasScreenVideo && screenVisible && (
         <Html
           transform
           occlude="blending"
@@ -805,7 +813,26 @@ function StageYouTubeCurtains({
             ref={stageHtmlBoxRef}
             className="pointer-events-none relative h-[360px] w-[640px] overflow-hidden rounded bg-black shadow-2xl"
           >
-            {preloadedVideoIds.map((vid) => {
+            {!youtubeVideoId && mediaUrl && mediaType === 'VIDEO' && (
+              <SyncedMediaPlayer
+                mediaUrl={mediaUrl}
+                mediaType="VIDEO"
+                concert={concert}
+                isPlaying={isPlaying}
+                isPausedState={isPausedState}
+                muted={audienceMuted || musicMuted || musicVolume === 0}
+                volume={musicVolume}
+                venueStyle={venueStyle}
+                canAutoAdvance={canAutoAdvance}
+                onAutoAdvanceNext={onAutoAdvanceNext}
+                onKaraokeSongEnded={onKaraokeSongEnded}
+                onAutoplayBlocked={onAutoplayBlocked}
+                showLoadingOverlay
+                mediaElementRef={mediaElRef}
+                className="pointer-events-none absolute inset-0 h-full w-full object-contain transition-opacity duration-150"
+              />
+            )}
+            {youtubeVideoId && preloadedVideoIds.map((vid) => {
               const isActive = vid === youtubeVideoId;
               return (
                 <iframe
@@ -887,7 +914,7 @@ function StageYouTubeCurtains({
                 />
               );
             })}
-            {isPlaying && !ytSynced && !isPausedState && (
+            {youtubeVideoId && isPlaying && !ytSynced && !isPausedState && (
               <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-stone-950/95">
                 <div className="h-7 w-7 animate-spin rounded-full border-2 border-amber-400/30 border-t-amber-400" />
                 <div className="text-xs font-semibold tracking-wider text-amber-200/90">
@@ -928,6 +955,8 @@ function KaraokeBackLyricsScreen({
   transitionVisual,
   concert,
   youtubeVideoId,
+  mediaUrl,
+  mediaType,
   isPlaying,
   karaokeScoreCard,
 }: {
@@ -944,6 +973,8 @@ function KaraokeBackLyricsScreen({
   } | null;
   concert: RoomDTO['concert'];
   youtubeVideoId?: string;
+  mediaUrl?: string;
+  mediaType?: 'AUDIO' | 'VIDEO';
   isPlaying: boolean;
   karaokeScoreCard?: { score: number; trackTitle?: string } | null;
 }) {
@@ -966,7 +997,8 @@ function KaraokeBackLyricsScreen({
   };
 
   const isPausedState = concert.state === 'PAUSED' || concert.state === 'INTERMISSION';
-  const showVideo = Boolean(youtubeVideoId && (isPlaying || isPausedState));
+  const hasBackVideo = Boolean(youtubeVideoId || (mediaUrl && mediaType === 'VIDEO'));
+  const showVideo = Boolean(hasBackVideo && (isPlaying || isPausedState));
 
   useFrame((state) => {
     state.camera.getWorldDirection(rearCamDir);
@@ -1124,7 +1156,7 @@ function KaraokeBackLyricsScreen({
         <meshStandardMaterial color="#09090b" roughness={0.75} />
       </mesh>
 
-      {showVideo && youtubeVideoId && facingRearWall && (
+      {showVideo && hasBackVideo && facingRearWall && (
         <Html
           transform
           occlude="blending"
@@ -1136,6 +1168,22 @@ function KaraokeBackLyricsScreen({
           style={{ pointerEvents: 'none' }}
         >
           <div className="pointer-events-none relative h-[360px] w-[640px] overflow-hidden rounded bg-black shadow-2xl">
+            {!youtubeVideoId && mediaUrl && mediaType === 'VIDEO' && (
+              <SyncedMediaPlayer
+                mediaUrl={mediaUrl}
+                mediaType="VIDEO"
+                concert={concert}
+                isPlaying={isPlaying}
+                isPausedState={isPausedState}
+                muted
+                volume={0}
+                showLoadingOverlay
+                accentColor="fuchsia"
+                className="pointer-events-none absolute inset-0 h-full w-full object-contain transition-opacity duration-150"
+              />
+            )}
+            {youtubeVideoId && (
+            <>
             <iframe
               key={youtubeVideoId}
               ref={iframeRef}
@@ -1176,13 +1224,15 @@ function KaraokeBackLyricsScreen({
                 ytActiveVisual && ytSynced && isPlaying ? 'opacity-100' : isPausedState ? 'opacity-55' : 'opacity-0'
               }`}
             />
-            {isPlaying && !ytSynced && !isPausedState && (
+            {youtubeVideoId && isPlaying && !ytSynced && !isPausedState && (
               <div className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center gap-2 bg-stone-950/95">
                 <div className="h-7 w-7 animate-spin rounded-full border-2 border-fuchsia-400/30 border-t-fuchsia-400" />
                 <div className="text-xs font-semibold tracking-wider text-fuchsia-200/90">
                   Đang đồng bộ bài hát...
                 </div>
               </div>
+            )}
+            </>
             )}
             {transitionVisual?.active &&
               transitionVisual.targetVideoId &&
@@ -2475,6 +2525,8 @@ export function AuditoriumScene({
   cameraMode,
   qualityPreset = 'HIGH',
   youtubeVideoId,
+  mediaUrl,
+  mediaType,
   isYouTubePlaying = false,
   audienceMuted = false,
   musicVolume = 80,
@@ -2484,6 +2536,7 @@ export function AuditoriumScene({
   onKaraokeSongEnded,
   karaokeScoreCard,
   ytIframeRef,
+  mediaElRef,
   onAutoplayBlocked,
   onSelectSeat,
   onSelectKaraokeMic,
@@ -2511,6 +2564,8 @@ export function AuditoriumScene({
   cameraMode: CameraMode;
   qualityPreset?: QualityPreset;
   youtubeVideoId?: string;
+  mediaUrl?: string;
+  mediaType?: 'AUDIO' | 'VIDEO';
   isYouTubePlaying?: boolean;
   audienceMuted?: boolean;
   musicVolume?: number;
@@ -2520,6 +2575,7 @@ export function AuditoriumScene({
   onKaraokeSongEnded?: (expectedIndex: number, shouldAutoAdvance: boolean) => void;
   karaokeScoreCard?: { score: number; trackTitle?: string } | null;
   ytIframeRef?: React.MutableRefObject<HTMLIFrameElement | null>;
+  mediaElRef?: React.MutableRefObject<HTMLMediaElement | null>;
   onAutoplayBlocked?: (blocked: boolean) => void;
   onSelectSeat: (seatId: string) => void;
   onSelectKaraokeMic?: (slot: 0 | 1) => void;
@@ -2622,6 +2678,8 @@ export function AuditoriumScene({
         transitionVisual={transitionVisual}
         concert={room.concert}
         youtubeVideoId={youtubeVideoId}
+        mediaUrl={mediaUrl}
+        mediaType={mediaType}
         isPlaying={isYouTubePlaying}
         audienceMuted={audienceMuted}
         musicVolume={musicVolume}
@@ -2632,6 +2690,7 @@ export function AuditoriumScene({
         onKaraokeSongEnded={onKaraokeSongEnded}
         karaokeScoreCard={karaokeScoreCard}
         ytIframeRef={ytIframeRef}
+        mediaElRef={mediaElRef}
         onAutoplayBlocked={onAutoplayBlocked}
       />
 
@@ -2640,6 +2699,8 @@ export function AuditoriumScene({
           transitionVisual={transitionVisual}
           concert={room.concert}
           youtubeVideoId={youtubeVideoId}
+          mediaUrl={mediaUrl}
+          mediaType={mediaType}
           isPlaying={isYouTubePlaying}
           karaokeScoreCard={karaokeScoreCard}
         />

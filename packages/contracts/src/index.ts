@@ -88,6 +88,8 @@ export interface SetlistItemDTO {
   lightingPreset: LightingPreset;
   youtubeUrl?: string;
   youtubeVideoId?: string;
+  mediaUrl?: string;
+  mediaType?: 'AUDIO' | 'VIDEO';
 }
 
 export interface ConcertDTO {

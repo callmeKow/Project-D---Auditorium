@@ -1,4 +1,7 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import {
@@ -47,6 +50,9 @@ export function createApp() {
     )
   );
   app.use(express.json());
+  const uploadsDir = path.resolve(process.cwd(), 'data', 'uploads');
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  app.use('/media', express.static(uploadsDir));
 
   app.get('/health', (_req, res) => {
     res.json({
@@ -193,6 +199,57 @@ export function createApp() {
       res.status(400).json({ error: (err as Error).message });
     }
   });
+
+  const ALLOWED_MEDIA_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.mp4', '.webm', '.mov']);
+  const VIDEO_MEDIA_EXTS = new Set(['.mp4', '.webm', '.mov']);
+
+  app.post(
+    '/rooms/:roomId/setlist/upload',
+    express.raw({ type: ['audio/*', 'video/*', 'application/octet-stream'], limit: '80mb' }),
+    (req, res) => {
+      const token = req.headers.authorization?.replace('Bearer ', '');
+      const user = getUserByToken(token);
+      if (!user) return res.status(401).json({ error: 'UNAUTHORIZED' });
+      const room = getRoomById(req.params.roomId);
+      if (!room) return res.status(404).json({ error: 'ROOM_NOT_FOUND' });
+      if (!canControlConcert(user.id, user.roles, room.concert, room.venueStyle, room.isPrivate)) {
+        return res.status(403).json({ error: 'FORBIDDEN' });
+      }
+      const buf = req.body as Buffer;
+      if (!Buffer.isBuffer(buf) || buf.length === 0) {
+        return res.status(400).json({ error: 'EMPTY_MEDIA_FILE' });
+      }
+      const rawName = decodeURIComponent(String(req.headers['x-file-name'] || 'track.mp3'));
+      const ext = path.extname(rawName).toLowerCase();
+      if (!ALLOWED_MEDIA_EXTS.has(ext)) {
+        return res.status(400).json({ error: 'UNSUPPORTED_MEDIA_FORMAT' });
+      }
+      const savedName = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}${ext}`;
+      fs.writeFileSync(path.join(uploadsDir, savedName), buf);
+
+      const rawTitle = decodeURIComponent(String(req.headers['x-track-title'] || '')).trim();
+      const baseTitle = path.basename(rawName, ext).trim() || 'Uploaded Track';
+      const rawDur = Number(req.headers['x-duration-sec']);
+      const durationSec = Number.isFinite(rawDur) && rawDur > 5 ? Math.round(rawDur) : 210;
+      const mediaType = VIDEO_MEDIA_EXTS.has(ext) ? 'VIDEO' : 'AUDIO';
+
+      try {
+        const item = addSetlistItem(room.concert, {
+          title: rawTitle || baseTitle,
+          artistName: user.displayName,
+          durationSec,
+          mode: 'PRERECORDED',
+          mediaUrl: `/media/${savedName}`,
+          mediaType,
+        });
+        persistRooms();
+        broadcastToRoom(room.id, { priority: 'P0', type: 'CONCERT_STATE_UPDATED', concert: room.concert });
+        res.status(201).json(item);
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+      }
+    }
+  );
 
   app.delete('/rooms/:roomId/setlist/:itemId', (req, res) => {
     const token = req.headers.authorization?.replace('Bearer ', '');

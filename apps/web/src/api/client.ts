@@ -15,6 +15,12 @@ import type {
 
 const API_BASE = (import.meta.env.VITE_API_URL || '/api').replace(/\/+$/, '');
 
+export function resolveMediaUrl(mediaUrl?: string): string | undefined {
+  if (!mediaUrl) return undefined;
+  if (/^https?:\/\//i.test(mediaUrl)) return mediaUrl;
+  return `${API_BASE}${mediaUrl.startsWith('/') ? '' : '/'}${mediaUrl}`;
+}
+
 async function request<T>(path: string, options?: RequestInit, token?: string | null): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -130,6 +136,31 @@ export const apiClient = {
     token: string
   ) {
     return request<SetlistItemDTO>(`/rooms/${roomId}/setlist`, { method: 'POST', body: JSON.stringify(payload) }, token);
+  },
+
+  async uploadSetlistMedia(
+    roomId: string,
+    file: File,
+    title: string,
+    durationSec: number | undefined,
+    token: string
+  ): Promise<SetlistItemDTO> {
+    const res = await fetch(`${API_BASE}/rooms/${roomId}/setlist/upload`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': encodeURIComponent(file.name),
+        ...(title.trim() ? { 'X-Track-Title': encodeURIComponent(title.trim()) } : {}),
+        ...(durationSec && Number.isFinite(durationSec) ? { 'X-Duration-Sec': String(Math.round(durationSec)) } : {}),
+      },
+      body: file,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data as SetlistItemDTO;
   },
 
   removeSetlistItem(roomId: string, itemId: string, token: string) {

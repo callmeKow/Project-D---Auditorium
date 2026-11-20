@@ -34,6 +34,8 @@ import {
   ListOrdered,
   Maximize2,
   Minimize2,
+  Upload,
+  Film,
 } from 'lucide-react';
 import {
   extractStandardYouTubeVideoId,
@@ -47,9 +49,10 @@ import { AuditoriumScene, type CameraMode } from '../components/auditorium/Audit
 import { DualDeckMixer } from '../components/auditorium/DualDeckMixer';
 import { GrandPianoSimulator } from '../components/auditorium/GrandPianoSimulator';
 import { MicActivityDot, PerformerMicPanel } from '../components/auditorium/PerformerMicPanel';
+import { SyncedMediaPlayer } from '../components/auditorium/SyncedMediaPlayer';
 import { realtimeStore } from '../realtime/realtimeStore';
 import { useAuth } from '../state/authStore';
-import { apiClient } from '../api/client';
+import { apiClient, resolveMediaUrl } from '../api/client';
 import { audioEngine } from '../audio/audioEngine';
 import { webrtcAudio, type WebRtcDiagnostics } from '../audio/webrtcAudio';
 
@@ -145,6 +148,9 @@ export function AuditoriumPage() {
   const [newSongMode, setNewSongMode] = useState<'LIVE' | 'PRERECORDED'>('LIVE');
   const [setlistError, setSetlistError] = useState<string | null>(null);
   const ytIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const mediaElRef = useRef<HTMLMediaElement | null>(null);
+  const mediaUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [pendingUploadMedia, setPendingUploadMedia] = useState(false);
   const [inviteUserId, setInviteUserId] = useState('');
 
   // Report Modal
@@ -611,6 +617,53 @@ export function AuditoriumPage() {
     }
   };
 
+  const handleUploadSetlistMedia = async (file: File) => {
+    if (!roomId || !token || pendingUploadMedia) return;
+    setSetlistError(null);
+    if (file.size > 80 * 1024 * 1024) {
+      setSetlistError('File tối đa 80MB.');
+      return;
+    }
+    setPendingUploadMedia(true);
+    try {
+      const durationSec = await new Promise<number | undefined>((resolve) => {
+        const isVid = file.type.startsWith('video/') || /\.(mp4|webm|mov)$/i.test(file.name);
+        const probe = document.createElement(isVid ? 'video' : 'audio');
+        const objUrl = URL.createObjectURL(file);
+        const timer = window.setTimeout(() => {
+          URL.revokeObjectURL(objUrl);
+          resolve(undefined);
+        }, 1200);
+        probe.onloadedmetadata = () => {
+          window.clearTimeout(timer);
+          const d = Number.isFinite(probe.duration) ? Math.round(probe.duration) : undefined;
+          URL.revokeObjectURL(objUrl);
+          resolve(d);
+        };
+        probe.onerror = () => {
+          window.clearTimeout(timer);
+          URL.revokeObjectURL(objUrl);
+          resolve(undefined);
+        };
+        probe.src = objUrl;
+      });
+
+      await apiClient.uploadSetlistMedia(roomId, file, newSongTitle, durationSec, token);
+      setNewSongTitle('');
+    } catch (err) {
+      const msg = (err as Error).message;
+      setSetlistError(
+        msg === 'UNAUTHORIZED'
+          ? 'Phiên đăng nhập đã hết hạn. Hãy bấm Sign In lại nhé!'
+          : msg === 'UNSUPPORTED_MEDIA_FORMAT'
+            ? 'Chỉ hỗ trợ MP3, WAV, OGG, M4A, AAC, FLAC, MP4, WEBM, MOV.'
+            : msg
+      );
+    } finally {
+      setPendingUploadMedia(false);
+    }
+  };
+
   const handleRemoveSong = async (itemId: string) => {
     if (!roomId || !token || pendingRemoveSongId) return;
     setPendingRemoveSongId(itemId);
@@ -658,6 +711,17 @@ export function AuditoriumPage() {
       audioEngine.setRoomOutputMuted(false);
       webrtcAudio.setAudienceMuted(false);
       await webrtcAudio.unlockPlayback();
+      if (mediaElRef.current && room) {
+        const el = mediaElRef.current;
+        const syncSec = realtimeStore.getSyncedPlaybackSec(room.concert);
+        const dur = Number.isFinite(el.duration) && el.duration > 1 ? el.duration : 0;
+        const target = dur > 1 ? syncSec % dur : syncSec;
+        if (Math.abs(el.currentTime - target) > 1.5 && el.readyState >= 1) {
+          el.currentTime = target;
+        }
+        el.muted = false;
+        el.play().catch(() => {});
+      }
       if (ytIframeRef.current?.contentWindow && room) {
         const syncSec = realtimeStore.getSyncedPlaybackSec(room.concert);
         const cap = audioEngine.getCaptureSettings();
@@ -688,8 +752,9 @@ export function AuditoriumPage() {
   };
 
   const currentSong = room?.concert.setlist[room.concert.currentSetlistIndex];
+  const currentMediaUrl = resolveMediaUrl(currentSong?.mediaUrl);
   const isCurrentVideoPlaying = Boolean(
-    currentSong?.youtubeVideoId &&
+    (currentSong?.youtubeVideoId || currentMediaUrl) &&
       (room?.concert.trackPlaying ?? (room?.concert.state !== 'PAUSED' && room?.concert.state !== 'COMPLETED'))
   );
 
@@ -785,8 +850,10 @@ export function AuditoriumPage() {
             cameraMode={cameraMode}
             qualityPreset={qualityPreset}
             youtubeVideoId={currentSong?.youtubeVideoId}
+            mediaUrl={currentMediaUrl}
+            mediaType={currentSong?.mediaType}
             isYouTubePlaying={Boolean(
-              currentSong?.youtubeVideoId &&
+              (currentSong?.youtubeVideoId || currentMediaUrl) &&
                 (room.concert.trackPlaying ?? (room.concert.state !== 'PAUSED' && room.concert.state !== 'COMPLETED'))
             )}
             audienceMuted={audienceMuted}
@@ -821,6 +888,7 @@ export function AuditoriumPage() {
             }
             karaokeScoreCard={isKaraoke ? karaokeScoreCard : null}
             ytIframeRef={ytIframeRef}
+            mediaElRef={mediaElRef}
             onAutoplayBlocked={setAutoplayBlocked}
             onSelectSeat={(seatId) => {
               realtimeStore.send({ type: 'OCCUPY_SEAT', seatId });
@@ -859,6 +927,49 @@ export function AuditoriumPage() {
             <Radio className="h-6 w-6 animate-pulse text-amber-400" />
             <span className="text-sm">Entering 3D Auditorium...</span>
           </div>
+        )}
+
+        {/* Synced Audio Playback for uploaded audio tracks (mp3, wav, ogg, m4a, flac) in all 3 rooms */}
+        {room && !currentSong?.youtubeVideoId && currentMediaUrl && currentSong?.mediaType === 'AUDIO' && (
+          <SyncedMediaPlayer
+            mediaUrl={currentMediaUrl}
+            mediaType="AUDIO"
+            concert={room.concert}
+            isPlaying={isCurrentVideoPlaying}
+            isPausedState={room.concert.state === 'PAUSED' || room.concert.state === 'INTERMISSION'}
+            muted={audienceMuted || musicMuted || effectiveMusicVolume === 0}
+            volume={effectiveMusicVolume}
+            venueStyle={room.venueStyle}
+            canAutoAdvance={canUsePerformControls}
+            onAutoAdvanceNext={(expectedIndex) =>
+              realtimeStore.send({ type: 'PERFORMER_CONCERT_CONTROL', action: 'NEXT_SONG', expectedIndex })
+            }
+            onKaraokeSongEnded={
+              isKaraoke
+                ? (expectedIndex, shouldAutoAdvance) => {
+                    const score = audioEngine.computeKaraokeScore();
+                    audioEngine.resetKaraokeVocalSession();
+                    realtimeStore.send({
+                      type: 'PERFORMER_CONCERT_CONTROL',
+                      action: 'END_SONG',
+                      expectedIndex,
+                      karaokeScore: score,
+                    });
+                    if (shouldAutoAdvance) {
+                      scheduleActionTimeout(() => {
+                        realtimeStore.send({
+                          type: 'PERFORMER_CONCERT_CONTROL',
+                          action: 'NEXT_SONG',
+                          expectedIndex,
+                        });
+                      }, 6000);
+                    }
+                  }
+                : undefined
+            }
+            onAutoplayBlocked={setAutoplayBlocked}
+            mediaElementRef={mediaElRef}
+          />
         )}
 
         {/* Fullscreen Karaoke Lyrics Video Overlay (KARAOKE only) */}
@@ -1936,6 +2047,13 @@ export function AuditoriumPage() {
                       >
                         <div className="flex items-center gap-1 truncate font-medium">
                           {item.youtubeVideoId && <Youtube className="h-3 w-3 shrink-0 text-red-400" />}
+                          {!item.youtubeVideoId && item.mediaUrl && (
+                            item.mediaType === 'VIDEO' ? (
+                              <Film className="h-3 w-3 shrink-0 text-sky-400" />
+                            ) : (
+                              <Music2 className="h-3 w-3 shrink-0 text-emerald-400" />
+                            )
+                          )}
                           <span className="truncate">
                             {idx + 1}. {item.title}
                           </span>
@@ -2012,6 +2130,32 @@ export function AuditoriumPage() {
                       >
                         {pendingAddSong ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}{' '}
                         {pendingAddSong ? 'Adding...' : 'Add Track'}
+                      </button>
+                    </div>
+                    <div className="pt-1">
+                      <input
+                        ref={mediaUploadInputRef}
+                        type="file"
+                        accept=".mp3,.wav,.ogg,.m4a,.aac,.flac,.mp4,.webm,.mov,audio/*,video/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) void handleUploadSetlistMedia(file);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={pendingUploadMedia}
+                        onClick={() => mediaUploadInputRef.current?.click()}
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-stone-700 bg-stone-900 px-2.5 py-1.5 text-[11px] font-semibold text-stone-200 transition hover:border-amber-400/60 hover:bg-stone-800 hover:text-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {pendingUploadMedia ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                        ) : (
+                          <Upload className="h-3.5 w-3.5 text-amber-400" />
+                        )}
+                        {pendingUploadMedia ? 'Đang tải file lên...' : 'Tải file nhạc / video (MP3, MP4, WAV...)'}
                       </button>
                     </div>
                   </form>

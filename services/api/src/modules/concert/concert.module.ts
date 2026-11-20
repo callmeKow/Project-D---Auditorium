@@ -42,6 +42,8 @@ export function addSetlistItem(
     mode?: 'LIVE' | 'PRERECORDED';
     lightingPreset?: LightingPreset;
     youtubeUrl?: string;
+    mediaUrl?: string;
+    mediaType?: 'AUDIO' | 'VIDEO';
   }
 ): SetlistItemDTO {
   const youtubeVideoId = extractYouTubeVideoId(input.youtubeUrl);
@@ -49,6 +51,8 @@ export function addSetlistItem(
     throw new Error('INVALID_YOUTUBE_URL');
   }
 
+  const mediaUrl = input.mediaUrl?.trim() || undefined;
+  const mediaType = mediaUrl ? (input.mediaType ?? 'AUDIO') : undefined;
   const title = input.title?.trim() || (youtubeVideoId ? `YouTube Track (${youtubeVideoId})` : '');
   if (!title) throw new Error('SETLIST_TITLE_REQUIRED');
 
@@ -57,10 +61,12 @@ export function addSetlistItem(
     title,
     artistName: input.artistName?.trim() || concert.performerName,
     durationSec: Math.max(30, Math.min(3600, input.durationSec ?? 210)),
-    mode: youtubeVideoId ? 'PRERECORDED' : (input.mode ?? 'LIVE'),
+    mode: youtubeVideoId || mediaUrl ? 'PRERECORDED' : (input.mode ?? 'LIVE'),
     lightingPreset: input.lightingPreset ?? 'WARM_CHAMBER',
     youtubeUrl: youtubeVideoId ? input.youtubeUrl?.trim() : undefined,
     youtubeVideoId,
+    mediaUrl,
+    mediaType,
   };
   concert.setlist.push(item);
   return item;
