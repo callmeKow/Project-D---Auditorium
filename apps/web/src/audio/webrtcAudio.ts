@@ -15,8 +15,21 @@ export interface WebRtcDiagnostics {
   packetsLost: number;
 }
 
+const turnUrl = import.meta.env.VITE_TURN_URL;
 const ICE_SERVERS: RTCConfiguration = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    ...(turnUrl
+      ? [
+          {
+            urls: turnUrl,
+            username: import.meta.env.VITE_TURN_USERNAME || undefined,
+            credential: import.meta.env.VITE_TURN_CREDENTIAL || undefined,
+          },
+        ]
+      : []),
+  ],
 };
 
 /**

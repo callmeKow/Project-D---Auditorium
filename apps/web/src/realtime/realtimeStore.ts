@@ -108,7 +108,7 @@ class RealtimeRoomStore {
     }
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws`;
+    const wsUrl = import.meta.env.VITE_WS_URL || `${proto}//${window.location.host}/ws`;
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
 

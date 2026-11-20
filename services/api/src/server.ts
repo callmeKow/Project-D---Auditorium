@@ -38,7 +38,14 @@ import { getAnalyticsSummary } from './modules/analytics/analytics.module.js';
 
 export function createApp() {
   const app = express();
-  app.use(cors());
+  const corsOrigin = process.env.CORS_ORIGIN?.trim();
+  app.use(
+    cors(
+      corsOrigin && corsOrigin !== '*'
+        ? { origin: corsOrigin.split(',').map((o) => o.trim()), credentials: true }
+        : undefined
+    )
+  );
   app.use(express.json());
 
   app.get('/health', (_req, res) => {
