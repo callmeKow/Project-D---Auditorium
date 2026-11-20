@@ -133,14 +133,22 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
   const beatCountRef = useRef(0);
   const lastBeatAtRef = useRef(0);
   const smoothedBassRef = useRef(0);
+  const partyRampRef = useRef(isLiveOrActive ? 1 : 0);
 
   useFrame((state, delta) => {
+    partyRampRef.current = THREE.MathUtils.lerp(
+      partyRampRef.current,
+      isLiveOrActive ? 1 : 0,
+      Math.min(1, delta * (isLiveOrActive ? 1.15 : 2.2))
+    );
+    const ramp = partyRampRef.current;
+
     const t = state.clock.elapsedTime;
     const { bass, mid, high, beatHit } = audioEngine.readBeatBass(isLiveOrActive, t);
     smoothedBassRef.current = THREE.MathUtils.lerp(smoothedBassRef.current, bass, Math.min(1, delta * 14));
     const sb = smoothedBassRef.current;
 
-    if (beatHit && t - lastBeatAtRef.current > 0.25) {
+    if (beatHit && ramp > 0.2 && t - lastBeatAtRef.current > 0.25) {
       lastBeatAtRef.current = t;
       beatCountRef.current += 1;
     }
@@ -156,7 +164,7 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       beam.rotation.z = Math.sin(phase) * (0.28 + sb * 0.22);
       beam.rotation.x = 0.25 + Math.cos(phase * 0.8) * 0.15;
       const mat = beam.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.08 + sb * 0.22 + (beatHit ? 0.1 : 0);
+      mat.opacity = ramp * (0.08 + sb * 0.22 + (beatHit ? 0.1 : 0));
       mat.color.set(i % 2 === 0 ? activeColorHex : altColorHex);
     }
 
@@ -167,7 +175,7 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       const band = i < 4 ? sb : i < 8 ? mid : high;
       const wave = isLiveOrActive
         ? 0.35 + band * 2.1 + Math.abs(Math.sin(t * 6.5 + i * 0.65)) * 0.35
-        : 0.22;
+        : 0.18;
       const nextScale = THREE.MathUtils.lerp(bar.scale.y, Math.max(0.18, Math.min(2.8, wave)), Math.min(1, delta * 18));
       bar.scale.y = nextScale;
       bar.position.y = 0.44 + nextScale * 0.6;
@@ -175,7 +183,7 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       const col = SPECTRUM_PALETTE[(i + beatCountRef.current) % SPECTRUM_PALETTE.length];
       mat.emissive.set(col);
       mat.color.set(col);
-      mat.emissiveIntensity = isLiveOrActive ? 1.2 + sb * 2.4 : 0.4;
+      mat.emissiveIntensity = THREE.MathUtils.lerp(0.08, 1.2 + sb * 2.4, ramp);
     }
 
     // Side-Wall LED Equalizer Pillars (10 tall music bars along left & right walls)
@@ -186,7 +194,7 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       const band = sideIdx < 2 ? sb : sideIdx < 4 ? mid : high;
       const wave = isLiveOrActive
         ? 0.35 + band * 1.65 + Math.abs(Math.sin(t * 5.8 + i * 0.85)) * 0.3
-        : 0.25;
+        : 0.2;
       const nextScale = THREE.MathUtils.lerp(bar.scale.y, Math.max(0.2, Math.min(2.1, wave)), Math.min(1, delta * 16));
       bar.scale.y = nextScale;
       bar.position.y = 0.65 + nextScale * 0.95;
@@ -194,7 +202,7 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       const col = SPECTRUM_PALETTE[(sideIdx + beatCountRef.current) % SPECTRUM_PALETTE.length];
       mat.emissive.set(col);
       mat.color.set(col);
-      mat.emissiveIntensity = isLiveOrActive ? 1.15 + sb * 2.1 : 0.35;
+      mat.emissiveIntensity = THREE.MathUtils.lerp(0.08, 1.15 + sb * 2.1, ramp);
     }
 
     // Overhead Truss Spectrum Crown (12 mini overhead equalizer bars)
@@ -202,28 +210,28 @@ function ConcertBeatLights({ isLiveOrActive, qualityPreset }: { isLiveOrActive: 
       const bar = crownEqRefs.current[i];
       if (!bar) continue;
       const band = i % 3 === 0 ? sb : i % 3 === 1 ? mid : high;
-      const wave = isLiveOrActive ? 0.3 + band * 1.6 + Math.abs(Math.cos(t * 7 + i * 0.7)) * 0.28 : 0.2;
+      const wave = isLiveOrActive ? 0.3 + band * 1.6 + Math.abs(Math.cos(t * 7 + i * 0.7)) * 0.28 : 0.18;
       const nextScale = THREE.MathUtils.lerp(bar.scale.y, Math.max(0.2, Math.min(1.9, wave)), Math.min(1, delta * 18));
       bar.scale.y = nextScale;
       const mat = bar.material as THREE.MeshStandardMaterial;
       const col = SPECTRUM_PALETTE[(i + beatCountRef.current) % SPECTRUM_PALETTE.length];
       mat.emissive.set(col);
       mat.color.set(col);
-      mat.emissiveIntensity = isLiveOrActive ? 1.3 + band * 2.0 : 0.4;
+      mat.emissiveIntensity = THREE.MathUtils.lerp(0.08, 1.3 + band * 2.0, ramp);
     }
 
     if (stageStripRef.current) {
       stageStripRef.current.emissive.set(activeColorHex);
-      stageStripRef.current.emissiveIntensity = 1.2 + sb * 3.0;
+      stageStripRef.current.emissiveIntensity = THREE.MathUtils.lerp(0.12, 1.2 + sb * 3.0, ramp);
     }
 
     if (leftLightRef.current) {
       leftLightRef.current.color.set(activeColorHex);
-      leftLightRef.current.intensity = 2.0 + sb * 6.5 + (beatHit ? 2.5 : 0);
+      leftLightRef.current.intensity = ramp * (2.0 + sb * 6.5 + (beatHit ? 2.5 : 0));
     }
     if (rightLightRef.current) {
       rightLightRef.current.color.set(altColorHex);
-      rightLightRef.current.intensity = 2.0 + sb * 6.5 + (beatHit ? 2.5 : 0);
+      rightLightRef.current.intensity = ramp * (2.0 + sb * 6.5 + (beatHit ? 2.5 : 0));
     }
   });
 
@@ -1411,26 +1419,43 @@ function KaraokeDiscoLightRig({
   const spinGroupRef = useRef<THREE.Group>(null);
   const beamMatRefs = useRef<(THREE.MeshBasicMaterial | null)[]>([]);
   const ballMatRef = useRef<THREE.MeshPhysicalMaterial>(null);
+  const leftDiscoLightRef = useRef<THREE.PointLight>(null);
+  const rightDiscoLightRef = useRef<THREE.PointLight>(null);
+  const partyRampRef = useRef(isLiveOrActive ? 1 : 0);
 
   useFrame((state, delta) => {
+    partyRampRef.current = THREE.MathUtils.lerp(
+      partyRampRef.current,
+      isLiveOrActive ? 1 : 0,
+      Math.min(1, delta * (isLiveOrActive ? 1.15 : 2.2))
+    );
+    const ramp = partyRampRef.current;
+
     const t = state.clock.elapsedTime;
     const { bass, beatHit } = audioEngine.readBeatBass(isLiveOrActive, t);
     const g = spinGroupRef.current;
     if (g) {
-      const spinSpeed = isLiveOrActive ? 1.15 + bass * 1.4 : 0.45;
+      const spinSpeed = THREE.MathUtils.lerp(0.18, 1.25 + bass * 1.45, ramp);
       g.rotation.y = (g.rotation.y + delta * spinSpeed) % (Math.PI * 2);
-      g.rotation.x = Math.sin(t * 0.9) * 0.14;
-      g.rotation.z = Math.cos(t * 0.75) * 0.14;
+      g.rotation.x = Math.sin(t * 0.9) * 0.14 * ramp;
+      g.rotation.z = Math.cos(t * 0.75) * 0.14 * ramp;
     }
 
     if (ballMatRef.current) {
-      ballMatRef.current.emissiveIntensity = isLiveOrActive ? 0.35 + bass * 0.65 : 0.2;
+      ballMatRef.current.emissiveIntensity = THREE.MathUtils.lerp(0.04, 0.42 + bass * 0.72, ramp);
     }
 
     for (let i = 0; i < 8; i++) {
       const mat = beamMatRefs.current[i];
       if (!mat) continue;
-      mat.opacity = (isLiveOrActive ? 0.11 + bass * 0.18 + (beatHit ? 0.08 : 0) : 0.06);
+      mat.opacity = ramp * (0.11 + bass * 0.19 + (beatHit ? 0.09 : 0));
+    }
+
+    if (leftDiscoLightRef.current) {
+      leftDiscoLightRef.current.intensity = ramp * (2.4 + bass * 1.4);
+    }
+    if (rightDiscoLightRef.current) {
+      rightDiscoLightRef.current.intensity = ramp * (2.4 + bass * 1.4);
     }
   });
 
@@ -1487,8 +1512,8 @@ function KaraokeDiscoLightRig({
 
         {enableLights && (
           <>
-            <pointLight position={[1.4, -0.4, 0]} intensity={2.2} distance={13} color="#ec4899" />
-            <pointLight position={[-1.4, -0.4, 0]} intensity={2.2} distance={13} color="#38bdf8" />
+            <pointLight ref={leftDiscoLightRef} position={[1.4, -0.4, 0]} intensity={0} distance={13} color="#ec4899" />
+            <pointLight ref={rightDiscoLightRef} position={[-1.4, -0.4, 0]} intensity={0} distance={13} color="#38bdf8" />
           </>
         )}
       </group>
@@ -1509,20 +1534,33 @@ function KaraokeLoungeArchitecture({
 }) {
   const neonSideZ = [-2.5, -0.2, 2.1, 4.4, 6.7];
   const ledTileRefs = useRef<(THREE.MeshStandardMaterial | null)[]>([]);
+  const ringLightRef = useRef<THREE.PointLight>(null);
   const phaseRef = useRef(0);
+  const partyRampRef = useRef(isLiveOrActive ? 1 : 0);
   const [hoveredMicSlot, setHoveredMicSlot] = useState<number | null>(null);
 
-  useFrame((state) => {
+  useFrame((state, delta) => {
+    partyRampRef.current = THREE.MathUtils.lerp(
+      partyRampRef.current,
+      isLiveOrActive ? 1 : 0,
+      Math.min(1, delta * (isLiveOrActive ? 1.15 : 2.2))
+    );
+    const ramp = partyRampRef.current;
+
     const t = state.clock.elapsedTime;
     const { bass, beatHit } = audioEngine.readBeatBass(isLiveOrActive, t);
-    if (beatHit) phaseRef.current += 1;
+    if (beatHit && ramp > 0.25) phaseRef.current += 1;
     for (let i = 0; i < 12; i++) {
       const mat = ledTileRefs.current[i];
       if (!mat) continue;
       const colorHex = LED_TILE_PALETTE[(i + phaseRef.current) % LED_TILE_PALETTE.length];
       mat.emissive.set(colorHex);
       mat.color.set(colorHex);
-      mat.emissiveIntensity = 0.65 + bass * 1.4 + Math.sin(t * 3 + i * 0.7) * 0.2;
+      const activeGlow = 0.65 + bass * 1.45 + Math.sin(t * 3 + i * 0.7) * 0.2;
+      mat.emissiveIntensity = THREE.MathUtils.lerp(0.06, activeGlow, ramp);
+    }
+    if (ringLightRef.current) {
+      ringLightRef.current.intensity = THREE.MathUtils.lerp(0.25, 2.6 + bass * 0.8, ramp);
     }
   });
 
@@ -1624,7 +1662,7 @@ function KaraokeLoungeArchitecture({
           <torusGeometry args={[1.65, 0.06, 10, 36]} />
           <meshStandardMaterial color={sconceColor} emissive={sconceColor} emissiveIntensity={2.0} />
         </mesh>
-        {enableLights && <pointLight position={[0, -0.35, 0]} intensity={2.6} distance={14} color="#fdf4ff" />}
+        {enableLights && <pointLight ref={ringLightRef} position={[0, -0.35, 0]} intensity={0.25} distance={14} color="#fdf4ff" />}
       </group>
       <KaraokeDiscoLightRig enableLights={enableLights} isLiveOrActive={isLiveOrActive} />
 
@@ -2202,6 +2240,64 @@ function AuditoriumController({
   );
 }
 
+function KaraokeDynamicLights({
+  isActive,
+  qualityPreset,
+}: {
+  isActive: boolean;
+  qualityPreset: QualityPreset;
+}) {
+  const { gl, scene } = useThree();
+  const hemiRef = useRef<THREE.HemisphereLight>(null);
+  const ambRef = useRef<THREE.AmbientLight>(null);
+  const spotRef = useRef<THREE.SpotLight>(null);
+  const centerLightRef = useRef<THREE.PointLight>(null);
+  const leftLightRef = useRef<THREE.PointLight>(null);
+  const rightLightRef = useRef<THREE.PointLight>(null);
+  const rampRef = useRef(isActive ? 1 : 0);
+
+  useFrame((state, delta) => {
+    rampRef.current = THREE.MathUtils.lerp(
+      rampRef.current,
+      isActive ? 1 : 0,
+      Math.min(1, delta * (isActive ? 1.1 : 2.2))
+    );
+    const r = rampRef.current;
+    const { bass } = audioEngine.readBeatBass(isActive, state.clock.elapsedTime);
+
+    gl.toneMappingExposure = THREE.MathUtils.lerp(0.55, 1.18, r);
+    const s = scene as THREE.Scene & { environmentIntensity?: number };
+    const maxEnv = qualityPreset === 'HIGH' ? 1.05 : qualityPreset === 'MEDIUM' ? 0.78 : 0.5;
+    s.environmentIntensity = THREE.MathUtils.lerp(0.14, maxEnv, r);
+
+    if (hemiRef.current) hemiRef.current.intensity = THREE.MathUtils.lerp(0.07, 0.44, r);
+    if (ambRef.current) ambRef.current.intensity = THREE.MathUtils.lerp(0.06, 0.34, r);
+    if (spotRef.current) spotRef.current.intensity = THREE.MathUtils.lerp(1.1, 7.6 + bass * 1.4, r);
+    if (centerLightRef.current) centerLightRef.current.intensity = THREE.MathUtils.lerp(0.18, 3.6 + bass * 1.2, r);
+    if (leftLightRef.current) leftLightRef.current.intensity = THREE.MathUtils.lerp(0.12, 2.8 + bass * 0.9, r);
+    if (rightLightRef.current) rightLightRef.current.intensity = THREE.MathUtils.lerp(0.12, 2.8 + bass * 0.9, r);
+  });
+
+  return (
+    <>
+      <hemisphereLight ref={hemiRef} args={['#f5d0fe', '#1e1035', 0.07]} />
+      <ambientLight ref={ambRef} color="#f8fafc" intensity={0.06} />
+      <spotLight
+        ref={spotRef}
+        position={[0, 6.2, 1.4]}
+        angle={0.56}
+        penumbra={0.72}
+        intensity={1.1}
+        color="#f472b6"
+        castShadow={qualityPreset !== 'LOW'}
+      />
+      <pointLight ref={centerLightRef} position={[0, 3.8, 1.5]} intensity={0.18} distance={9.5} color="#f472b6" />
+      <pointLight ref={leftLightRef} position={[-2.6, 3.4, -1.2]} intensity={0.12} distance={10} color="#38bdf8" />
+      <pointLight ref={rightLightRef} position={[2.6, 3.4, -1.2]} intensity={0.12} distance={10} color="#e879f9" />
+    </>
+  );
+}
+
 export function AuditoriumScene({
   transitionVisual,
   room,
@@ -2267,6 +2363,9 @@ export function AuditoriumScene({
   const shadowsEnabled = qualityPreset !== 'LOW';
   const dpr: [number, number] = qualityPreset === 'LOW' ? [1, 1] : qualityPreset === 'MEDIUM' ? [1, 1.5] : [1, 2];
   const maxVisibleAvatars = qualityPreset === 'LOW' ? 12 : 30; // TBD-06: 10-12 on low-tier/mobile, 20+ on desktop
+  const isKaraokeMusicActive =
+    venueStyle === 'KARAOKE' &&
+    (isYouTubePlaying || (room.concert.state === 'LIVE' && (room.concert.trackPlaying ?? false)));
 
   return (
     <div className="relative isolate z-0 h-full w-full">
@@ -2276,7 +2375,7 @@ export function AuditoriumScene({
         gl={{
           antialias: qualityPreset !== 'LOW',
           toneMapping: THREE.ACESFilmicToneMapping,
-          toneMappingExposure: venueStyle === 'CHAMBER' ? 0.88 : 1.15,
+          toneMappingExposure: venueStyle === 'CHAMBER' ? 0.88 : venueStyle === 'KARAOKE' ? 0.55 : 1.15,
         }}
         camera={{ position: [0, 3.6, 8.2], fov: 50 }}
         className="h-full w-full"
@@ -2295,39 +2394,38 @@ export function AuditoriumScene({
         ]}
       />
 
-      {/* Warm Candlelit Intimate Fill for Chamber/Opera; Club/Show High-Contrast for Concert/Karaoke */}
-      <hemisphereLight
-        args={[
-          venueStyle === 'KARAOKE' ? '#f5d0fe' : venueStyle === 'CHAMBER' ? '#fbbf24' : light.ambient,
-          venueStyle === 'KARAOKE' ? '#1e1035' : '#120905',
-          venueStyle === 'CONCERT' ? 0.25 : venueStyle === 'KARAOKE' ? 0.42 : 0.16,
-        ]}
-      />
-      <ambientLight
-        color={venueStyle === 'KARAOKE' ? '#f8fafc' : light.ambient}
-        intensity={venueStyle === 'CONCERT' ? 0.18 : venueStyle === 'KARAOKE' ? 0.32 : light.ambientInt}
-      />
+      {venueStyle === 'KARAOKE' ? (
+        <KaraokeDynamicLights isActive={isKaraokeMusicActive} qualityPreset={qualityPreset} />
+      ) : (
+        <>
+          {/* Warm Candlelit Intimate Fill for Chamber/Opera; Club/Show High-Contrast for Concert */}
+          <hemisphereLight
+            args={[
+              venueStyle === 'CHAMBER' ? '#fbbf24' : light.ambient,
+              '#120905',
+              venueStyle === 'CONCERT' ? 0.25 : 0.16,
+            ]}
+          />
+          <ambientLight
+            color={light.ambient}
+            intensity={venueStyle === 'CONCERT' ? 0.18 : light.ambientInt}
+          />
 
-      {/* Focused Stage Spotlight + Soft Warm Amber Fill for Chamber/Opera */}
-      <spotLight
-        position={[0, 6.2, 1.4]}
-        angle={venueStyle === 'CHAMBER' ? 0.45 : 0.56}
-        penumbra={venueStyle === 'CHAMBER' ? 0.9 : 0.72}
-        intensity={light.spotInt}
-        color={light.spot}
-        castShadow={shadowsEnabled}
-      />
-      {venueStyle === 'CHAMBER' && (
-        <>
-          <pointLight position={[-2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
-          <pointLight position={[2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
-        </>
-      )}
-      {venueStyle === 'KARAOKE' && (
-        <>
-          <pointLight position={[0, 3.8, 1.5]} intensity={3.6} distance={9.5} color="#f472b6" />
-          <pointLight position={[-2.6, 3.4, -1.2]} intensity={2.8} distance={10} color="#38bdf8" />
-          <pointLight position={[2.6, 3.4, -1.2]} intensity={2.8} distance={10} color="#e879f9" />
+          {/* Focused Stage Spotlight + Soft Warm Amber Fill for Chamber/Opera */}
+          <spotLight
+            position={[0, 6.2, 1.4]}
+            angle={venueStyle === 'CHAMBER' ? 0.45 : 0.56}
+            penumbra={venueStyle === 'CHAMBER' ? 0.9 : 0.72}
+            intensity={light.spotInt}
+            color={light.spot}
+            castShadow={shadowsEnabled}
+          />
+          {venueStyle === 'CHAMBER' && (
+            <>
+              <pointLight position={[-2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
+              <pointLight position={[2.2, 3.1, -1.8]} intensity={1.75} distance={8.5} color="#f59e0b" />
+            </>
+          )}
         </>
       )}
 
@@ -2335,7 +2433,7 @@ export function AuditoriumScene({
         <KaraokeLoungeArchitecture
           sconceColor={light.sconce}
           enableLights={qualityPreset !== 'LOW'}
-          isLiveOrActive={room.concert.state === 'LIVE' || room.concert.state === 'SOUND_CHECK'}
+          isLiveOrActive={isKaraokeMusicActive}
           onSelectKaraokeMic={onSelectKaraokeMic}
         />
       ) : (
@@ -2376,7 +2474,11 @@ export function AuditoriumScene({
 
       {(venueStyle === 'CONCERT' || venueStyle === 'KARAOKE') && (
         <ConcertBeatLights
-          isLiveOrActive={room.concert.state === 'LIVE' || room.concert.state === 'SOUND_CHECK'}
+          isLiveOrActive={
+            venueStyle === 'KARAOKE'
+              ? isKaraokeMusicActive
+              : room.concert.state === 'LIVE' || room.concert.state === 'SOUND_CHECK'
+          }
           qualityPreset={qualityPreset}
         />
       )}

@@ -127,11 +127,11 @@ function createSeededKaraokeRoom(): RoomDTO {
       performerName: 'Cả Phòng Hát Tự Do',
       invitedPerformerIds: [],
       scheduledAt: new Date().toISOString(),
-      state: 'LIVE',
+      state: 'PREPARING',
       currentSetlistIndex: 0,
       isSpontaneous: true,
-      trackPlaying: true,
-      trackStartedAtServerMs: Date.now(),
+      trackPlaying: false,
+      trackStartedAtServerMs: undefined,
       trackPausedAtSec: 0,
       setlist: [
         {
@@ -370,11 +370,11 @@ export function createSmallRoom(params: {
     performerName: params.performerName,
     invitedPerformerIds: [],
     scheduledAt: new Date().toISOString(),
-    state: isKaraoke ? 'LIVE' : 'PREPARING',
+    state: 'PREPARING',
     currentSetlistIndex: 0,
     isSpontaneous: params.isSpontaneous,
-    trackPlaying: isKaraoke,
-    trackStartedAtServerMs: isKaraoke ? Date.now() : undefined,
+    trackPlaying: false,
+    trackStartedAtServerMs: undefined,
     trackPausedAtSec: 0,
     setlist: [
       {
