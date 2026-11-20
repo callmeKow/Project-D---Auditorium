@@ -1,10 +1,39 @@
-# Deployment Plan — Virtual Music World (Oracle Cloud Always Free • Singapore)
+# Deployment Plan & Production Context — Virtual Music World
 
-Tài liệu này hướng dẫn chi tiết lộ trình triển khai **Virtual Music World** lên **Oracle Cloud Always Free (Region: Singapore)** để nhiều người dùng truy cập đồng thời với độ trễ thấp (~30–50ms từ Việt Nam), chạy 24/7 **không bị sleep**.
+## 0. Trạng thái Deploy thực tế (Production Context cho AI & Dev)
+
+> **Tóm tắt nhanh cho AI khi mở repo ở máy mới:** Hệ thống hiện đang chạy Production theo mô hình **tách Frontend (Cloudflare Pages) + Backend (Render Singapore)**, kết nối tự động từ nhánh **`main`** của GitHub `callmeKow/Project-D---Auditorium`.
+
+| Thành phần | Nền tảng | Region | URL / Endpoint | Ghi chú |
+| :--- | :--- | :--- | :--- | :--- |
+| **Source Repo** | GitHub | — | `https://github.com/callmeKow/Project-D---Auditorium` | Nhánh production: **`main`** |
+| **Frontend (`@vmw/web`)** | **Cloudflare Pages** | Global Edge (VN & SG) | `https://project-d---auditorium.pages.dev` | Auto-deploy khi push `main` |
+| **Backend (`@vmw/api`)** | **Render** (Free Web Service) | **Singapore** | `https://kowie-auditorium.onrender.com` | Auto-deploy khi push `main` (`On Commit`) |
+| **WebSocket Realtime** | **Render** (`ws`) | **Singapore** | `wss://kowie-auditorium.onrender.com/ws` | Chung process với `@vmw/api` |
+| **Health Check** | **Render** | **Singapore** | `https://kowie-auditorium.onrender.com/health` | Dùng để ping giữ server thức |
+
+### Cấu hình Build & Environment Variables đang dùng
+
+1. **Render (`Kowie Auditorium` — Service ID: `srv-dc003ne7bikc7391ou00`):**
+   - **Branch:** `main`
+   - **Build Command:** `npm ci --include=dev && npm --workspace=@vmw/api run build`
+   - **Start Command:** `node services/api/dist/server.js`
+   - **Health Check Path:** `/health`
+   - **Env Vars:** `CORS_ORIGIN` *(tùy chọn, mặc định cho phép tất cả nếu không đặt; đặt `https://project-d---auditorium.pages.dev` nếu muốn khóa CORS)*.
+   - **Lưu ý vận hành:** Gói Render Free tự ngủ sau 15 phút không có request (cold start ~30–50s); có thể dùng `cron-job.org` ping `/health` mỗi 10 phút.
+
+2. **Cloudflare Pages (`project-d---auditorium` / `kowie-auditorium`):**
+   - **Branch:** `main`
+   - **Build Command:** `npm ci --include=dev && npm --workspace=@vmw/web run build`
+   - **Build Output Directory:** `apps/web/dist`
+   - **Env Vars:**
+     - `VITE_API_URL` = `https://kowie-auditorium.onrender.com`
+     - `VITE_WS_URL` = `wss://kowie-auditorium.onrender.com/ws`
+     - *(Tùy chọn cho WebRTC Mic qua nhiều mạng NAT khác nhau)*: `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`.
 
 ---
 
-## Kiến trúc đề xuất
+## Kiến trúc đề xuất (Nếu nâng cấp lên Oracle Cloud Always Free)
 
 ```text
 Người dùng (Trình duyệt HTTPS/WSS)
@@ -17,27 +46,22 @@ Người dùng (Trình duyệt HTTPS/WSS)
            └── @vmw/api (Node.js + Express + WebSocket ws :4000, quản lý bởi PM2)
 ```
 
-*(Ghi chú: Nếu chưa có tên miền riêng, có thể dùng **Cloudflare Pages** cho Frontend và **Cloudflare Tunnel (`cloudflared`)** hoặc **DuckDNS + Caddy** cho Backend trên Oracle VM để có sẵn `https://` và `wss://` — bắt buộc để trình duyệt cho phép bật Microphone.)*
+*(Ghi chú: Hiện tại đang dùng **Render (Singapore)** thay cho Oracle Cloud để không cần thẻ Visa/Mastercard; sau này nếu muốn không bị sleep khi rảnh và chịu tải lớn 100–500 CCU thì chuyển `@vmw/api` sang Oracle Cloud theo hướng dẫn bên dưới.)*
 
 ---
 
-## Phần 1: Các Task AI sẽ thực hiện trong Codebase (Code & Config)
+## Phần 1: Các Task AI thực hiện trong Codebase (Code & Config)
 
-> Sau khi bạn duyệt plan, AI sẽ thực hiện các task này trong repository để code sẵn sàng lên Production:
-
-- [ ] **Task 1 — Cấu hình biến môi trường Frontend (`VITE_API_URL`, `VITE_WS_URL`)**
-  - Cập nhật `apps/web/src/services/apiClient.ts` (hiện đang gọi tương đối `/api/...` qua Vite dev proxy) để đọc `import.meta.env.VITE_API_URL` khi chạy production (fallback về `/api` ở local dev).
-  - Cập nhật `apps/web/src/realtime/realtimeStore.ts` (dòng `108` hiện đang hardcode `${proto}//${window.location.host}/ws`) để đọc `import.meta.env.VITE_WS_URL` nếu có.
-- [ ] **Task 2 — Cấu hình CORS & Healthcheck cho Backend (`services/api`)**
-  - Cập nhật `services/api/src/server.ts` đọc `process.env.CORS_ORIGIN` (cho phép domain Frontend từ Cloudflare Pages / custom domain).
-  - Kiểm tra/bổ sung endpoint `GET /health` trả về `{ ok: true, clients, uptime }` phục vụ monitoring.
-- [ ] **Task 3 — Hỗ trợ TURN Server qua Env cho WebRTC Mic (`apps/web/src/audio/webrtcAudio.ts`)**
-  - Hiện tại `apps/web/src/audio/webrtcAudio.ts` (dòng `19`) chỉ cấu hình STUN (`stun:stun.l.google.com:19302`).
-  - Bổ sung đọc `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` để truyền âm thanh Mic ổn định qua mọi mạng Wi-Fi/4G khác nhau.
-- [ ] **Task 4 — Tạo cấu hình Production Server (`PM2` & `Caddyfile` / `Nginx`)**
-  - Tạo `infrastructure/prod/ecosystem.config.cjs` cho **PM2** chạy `@vmw/api` (auto-restart khi crash, tự khởi động lại cùng hệ điều hành).
-  - Tạo `infrastructure/prod/Caddyfile` mẫu (tự động cấp SSL Let's Encrypt và proxy WebSocket `/ws` + REST API).
-  - Bổ sung script `build:prod` ở root `package.json` và hướng dẫn `.env.production.example`.
+- [x] **Task 1 — Cấu hình biến môi trường Frontend (`VITE_API_URL`, `VITE_WS_URL`)**
+  - Đã cập nhật `apps/web/src/api/client.ts` đọc `import.meta.env.VITE_API_URL` (fallback `/api` ở local dev).
+  - Đã cập nhật `apps/web/src/realtime/realtimeStore.ts` đọc `import.meta.env.VITE_WS_URL` (fallback `${proto}//${window.location.host}/ws` ở local dev).
+  - Đã thêm `apps/web/src/vite-env.d.ts` để TypeScript nhận type `ImportMeta.env`.
+- [x] **Task 2 — Cấu hình CORS & Healthcheck cho Backend (`services/api`)**
+  - Đã cập nhật `services/api/src/server.ts` đọc `process.env.CORS_ORIGIN` và sẵn có endpoint `GET /health`.
+- [x] **Task 3 — Hỗ trợ TURN Server qua Env cho WebRTC Mic (`apps/web/src/audio/webrtcAudio.ts`)**
+  - Đã bổ sung đọc `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` bên cạnh STUN servers.
+- [ ] **Task 4 — Tạo cấu hình Production Server cho Oracle VM (`PM2` & `Caddyfile`)** *(chỉ cần làm khi chuyển từ Render sang Oracle Cloud VM)*
+  - Tạo `infrastructure/prod/ecosystem.config.cjs` cho **PM2** và `infrastructure/prod/Caddyfile`.
 
 ---
 
