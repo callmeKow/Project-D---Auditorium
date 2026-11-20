@@ -1108,15 +1108,18 @@ function AuditoriumArchitecture({
   enableChandelierLights,
   venueStyle,
   onSelectStagePiano,
+  onSelectStageMic,
 }: {
   sconceColor: string;
   enableChandelierLights: boolean;
   venueStyle: VenueStyle;
   onSelectStagePiano?: () => void;
+  onSelectStageMic?: () => void;
 }) {
   const slatOffsets = [-3.6, -2.0, -0.4, 1.2, 2.8, 4.4, 6.0, 7.6];
   const chandelierZ = [1.8, 5.4];
   const [pianoHovered, setPianoHovered] = useState(false);
+  const [micHovered, setMicHovered] = useState(false);
 
   const isConcert = venueStyle === 'CONCERT';
   const accentStripColor = isConcert ? '#38bdf8' : sconceColor;
@@ -1350,8 +1353,26 @@ function AuditoriumArchitecture({
         </mesh>
       </group>
 
-      {/* Center Stage Vocal Mic Stand (Polished Chrome & Metallic Capsule) */}
-      <group position={[0.8, 0.44, -1.3]}>
+      {/* Center Stage Vocal Mic Stand (Polished Chrome & Metallic Capsule — Clickable to hold Mic) */}
+      <group
+        position={[0.8, 0.44, -1.3]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onSelectStageMic?.();
+        }}
+        onPointerOver={() => {
+          document.body.style.cursor = 'pointer';
+          setMicHovered(true);
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = 'auto';
+          setMicHovered(false);
+        }}
+      >
+        <mesh position={[0, 0.62, 0]}>
+          <cylinderGeometry args={[0.16, 0.16, 1.28, 8]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
         <mesh position={[0, 0.02, 0]}>
           <cylinderGeometry args={[0.18, 0.2, 0.04, 12]} />
           <meshPhysicalMaterial color="#18181b" metalness={0.88} roughness={0.16} clearcoat={0.8} envMapIntensity={1.7} />
@@ -1362,8 +1383,23 @@ function AuditoriumArchitecture({
         </mesh>
         <mesh position={[0, 1.24, 0.03]}>
           <sphereGeometry args={[0.045, 12, 12]} />
-          <meshPhysicalMaterial color="#f4f4f5" metalness={0.95} roughness={0.12} clearcoat={0.9} envMapIntensity={2.0} />
+          <meshPhysicalMaterial
+            color={micHovered ? '#fbbf24' : '#f4f4f5'}
+            emissive={micHovered ? '#f59e0b' : '#000000'}
+            emissiveIntensity={micHovered ? 1.5 : 0}
+            metalness={0.95}
+            roughness={0.12}
+            clearcoat={0.9}
+            envMapIntensity={2.0}
+          />
         </mesh>
+        {micHovered && (
+          <Html position={[0, 1.5, 0]} center distanceFactor={9} style={{ pointerEvents: 'none' }}>
+            <span className="whitespace-nowrap rounded-full border border-amber-400/70 bg-stone-950/90 px-2.5 py-1 text-[10px] font-bold text-amber-200 shadow-lg">
+              🎤 Bấm đứng vào Micro (Mở Mic Panel)
+            </span>
+          </Html>
+        )}
       </group>
 
       {/* Left & Right Stage Pro Monitor Speaker Stacks (Glossy Lacquer + Metallic Woofer Cones) */}
@@ -2026,6 +2062,7 @@ function AuditoriumController({
   qualityPreset,
   maxVisibleAvatars,
   controlsRef,
+  onAtStageMicChange,
   onPerfSample,
 }: {
   localUserId: string;
@@ -2037,12 +2074,14 @@ function AuditoriumController({
   qualityPreset: QualityPreset;
   maxVisibleAvatars: number;
   controlsRef: React.RefObject<ComponentRef<typeof OrbitControls> | null>;
+  onAtStageMicChange?: (atMic: boolean) => void;
   onPerfSample: (fps: number, drawCalls: number) => void;
 }) {
   const { camera, gl } = useThree();
   const keys = useRef<Record<string, boolean>>({});
   const lastBroadcast = useRef(0);
   const frameCounter = useRef({ frames: 0, lastAt: performance.now() });
+  const atStageMicRef = useRef(false);
   const [avatarKeys, setAvatarKeys] = useState<string[]>([]);
 
   useEffect(() => {
@@ -2122,6 +2161,24 @@ function AuditoriumController({
 
     const local = realtimeStore.avatars.get(localUserId);
     if (!local) return;
+
+    // Detect whether local avatar is currently at a stage vocal microphone spot (across all 3 room styles)
+    const onStageDeck = !local.seatId && local.targetPosition[1] >= 0.35 && local.targetPosition[2] <= -0.1;
+    let nearMic = false;
+    if (onStageDeck) {
+      const lx = local.targetPosition[0];
+      const lz = local.targetPosition[2];
+      if (venueStyle === 'KARAOKE') {
+        nearMic =
+          Math.hypot(lx - -0.85, lz - -1.4) <= 1.15 || Math.hypot(lx - 0.85, lz - -1.4) <= 1.15;
+      } else {
+        nearMic = Math.hypot(lx - 0.8, lz - -1.4) <= 1.15;
+      }
+    }
+    if (nearMic !== atStageMicRef.current) {
+      atStageMicRef.current = nearMic;
+      onAtStageMicChange?.(nearMic);
+    }
 
     let dx = 0;
     let dz = 0;
@@ -2320,6 +2377,8 @@ export function AuditoriumScene({
   onSelectSeat,
   onSelectKaraokeMic,
   onSelectStagePiano,
+  onSelectStageMic,
+  onAtStageMicChange,
   pianoKeyboardActive = false,
   onPerfSample,
 }: {
@@ -2354,6 +2413,8 @@ export function AuditoriumScene({
   onSelectSeat: (seatId: string) => void;
   onSelectKaraokeMic?: (slot: 0 | 1) => void;
   onSelectStagePiano?: () => void;
+  onSelectStageMic?: () => void;
+  onAtStageMicChange?: (atMic: boolean) => void;
   pianoKeyboardActive?: boolean;
   onPerfSample: (fps: number, drawCalls: number) => void;
 }) {
@@ -2442,6 +2503,7 @@ export function AuditoriumScene({
           enableChandelierLights={qualityPreset === 'HIGH' && venueStyle === 'CHAMBER'}
           venueStyle={venueStyle}
           onSelectStagePiano={onSelectStagePiano}
+          onSelectStageMic={onSelectStageMic}
         />
       )}
 
@@ -2589,6 +2651,7 @@ export function AuditoriumScene({
         qualityPreset={qualityPreset}
         maxVisibleAvatars={maxVisibleAvatars}
         controlsRef={controlsRef}
+        onAtStageMicChange={onAtStageMicChange}
         onPerfSample={onPerfSample}
       />
 

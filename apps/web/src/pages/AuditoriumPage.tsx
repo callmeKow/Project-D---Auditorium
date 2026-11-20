@@ -131,13 +131,8 @@ export function AuditoriumPage() {
     newScreenOpacity: number;
   } | null>(null);
   const [queuedDeckBIdx, setQueuedDeckBIdx] = useState(1);
-  const [micPanelOpen, setMicPanelOpen] = useState(
-    () =>
-      effectiveRole === 'ARTIST' ||
-      effectiveRole === 'HOST' ||
-      effectiveRole === 'ADMIN' ||
-      Boolean(navState?.stagePosition)
-  );
+  const [atStageMic, setAtStageMic] = useState(false);
+  const [micPanelOpen, setMicPanelOpen] = useState(false);
   const [musicVolume, setMusicVolume] = useState(() => audioEngine.getCaptureSettings().musicVolume);
   const [musicMuted, setMusicMuted] = useState(() => audioEngine.getCaptureSettings().musicMuted);
   const [emoteVolume, setEmoteVolume] = useState(() => audioEngine.getCaptureSettings().emoteVolume);
@@ -790,6 +785,8 @@ export function AuditoriumPage() {
             onAutoplayBlocked={setAutoplayBlocked}
             onSelectSeat={(seatId) => {
               realtimeStore.send({ type: 'OCCUPY_SEAT', seatId });
+              setAtStageMic(false);
+              if (!isBroadcasting) setMicPanelOpen(false);
               if (cameraMode === 'KARAOKE_STAGE_POV') {
                 setCameraMode('AUDIENCE_ORBIT');
               }
@@ -797,6 +794,17 @@ export function AuditoriumPage() {
             onSelectKaraokeMic={(slot) => {
               realtimeStore.stepOntoKaraokeStageMic(slot);
               setCameraMode('KARAOKE_STAGE_POV');
+              setAtStageMic(true);
+            }}
+            onSelectStageMic={() => {
+              realtimeStore.stepOntoAuditoriumStageMic();
+              setAtStageMic(true);
+            }}
+            onAtStageMicChange={(near) => {
+              setAtStageMic(near);
+              if (!near && !isBroadcasting) {
+                setMicPanelOpen(false);
+              }
             }}
             onSelectStagePiano={() => {
               if (isChamber) {
@@ -1163,7 +1171,7 @@ export function AuditoriumPage() {
         </div>
 
         {/* Performer Mic & Self-Monitor / Stage Echo Control Panel */}
-        {canUsePerformControls && (
+        {(canUsePerformControls || atStageMic || isBroadcasting) && (
           <PerformerMicPanel
             open={micPanelOpen}
             onClose={() => setMicPanelOpen(false)}
@@ -1382,19 +1390,21 @@ export function AuditoriumPage() {
         </div>
 
         {/* Dedicated Bottom-Center Performer & Stage Controls Bar (1 clean row, separated from Emotes) */}
-        {canUsePerformControls && (
+        {(canUsePerformControls || atStageMic || isBroadcasting) && (
           <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[94vw] -translate-x-1/2 items-center gap-1.5 overflow-x-auto whitespace-nowrap rounded-2xl border border-stone-800/90 bg-stone-950/90 px-3 py-2 shadow-2xl">
-            <button
-              type="button"
-              onClick={() => setMicPanelOpen((v) => !v)}
-              title="Mở bảng điều khiển Karaoke, Mic, Self-Monitor & Echo"
-              className={`flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
-                micPanelOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
-              }`}
-            >
-              <Sliders className="h-3.5 w-3.5" /> Mic Panel
-              <MicActivityDot />
-            </button>
+            {(atStageMic || isBroadcasting) && (
+              <button
+                type="button"
+                onClick={() => setMicPanelOpen((v) => !v)}
+                title="Mở bảng điều khiển Karaoke, Mic, Self-Monitor & Echo"
+                className={`flex shrink-0 items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[11px] font-semibold transition-all duration-100 active:scale-95 ${
+                  micPanelOpen ? 'bg-amber-500 text-stone-950' : 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+                }`}
+              >
+                <Sliders className="h-3.5 w-3.5" /> Mic Panel
+                <MicActivityDot />
+              </button>
+            )}
 
             {!isChamber && (
               <button

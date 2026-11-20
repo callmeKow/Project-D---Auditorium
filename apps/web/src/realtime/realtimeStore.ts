@@ -576,6 +576,31 @@ class RealtimeRoomStore {
   }
 
   /**
+   * Moves the local avatar onto the Chamber/Concert stage vocal microphone stand ([0.8, 0.44, -1.55])
+   * facing the audience (rotationY = 0).
+   */
+  stepOntoAuditoriumStageMic() {
+    const userId = this.lastConnectParams?.userId;
+    const localAv = userId ? this.avatars.get(userId) : undefined;
+    const stagePos: [number, number, number] = [0.8, 0.44, -1.55];
+
+    if (localAv) {
+      if (localAv.seatId) {
+        this.ignoreNextLeaveSeatEchoUntil = performance.now() + 800;
+        this.send({ type: 'LEAVE_SEAT' });
+        localAv.seatId = undefined;
+      }
+      localAv.targetPosition = stagePos;
+      localAv.targetRotationY = 0;
+      localAv.animation = 'IDLE';
+      this.sendMove(stagePos, 0, 'IDLE');
+      this.emit();
+    } else {
+      this.sendMove(stagePos, 0, 'IDLE');
+    }
+  }
+
+  /**
    * Moves the local avatar onto the Chamber/Opera stage at the Steinway Grand Piano bench
    * facing the piano keyboard (position [-1.4, 0.44, -1.05], rotationY = Math.PI).
    */
