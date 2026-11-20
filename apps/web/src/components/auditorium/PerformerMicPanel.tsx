@@ -742,14 +742,14 @@ export function PerformerMicPanel({
                   )}
                   Nhạc nền sân khấu
                 </button>
-                <span className="font-mono font-semibold text-purple-300">
+                <span className={`font-mono font-semibold ${musicVolume > 100 && !musicMuted ? 'text-amber-300' : 'text-purple-300'}`}>
                   {musicMuted ? 'MUTED' : `${musicVolume}%`}
                 </span>
               </div>
               <input
                 type="range"
                 min={0}
-                max={100}
+                max={200}
                 step={1}
                 value={musicVolume}
                 onChange={(e) => {

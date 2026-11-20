@@ -661,7 +661,7 @@ export function AuditoriumPage() {
       if (ytIframeRef.current?.contentWindow && room) {
         const syncSec = realtimeStore.getSyncedPlaybackSec(room.concert);
         const cap = audioEngine.getCaptureSettings();
-        const targetVol = Math.round((cap.musicVolume * deckAVolume) / 100);
+        const targetVol = Math.min(100, Math.round((cap.musicVolume * deckAVolume) / 100));
         const shouldMuteMusic = cap.musicMuted || targetVol === 0;
         ytIframeRef.current.contentWindow.postMessage(
           JSON.stringify({ event: 'command', func: shouldMuteMusic ? 'mute' : 'unMute', args: '' }),
@@ -1144,7 +1144,7 @@ export function AuditoriumPage() {
                 setAutoplayBlocked(false);
                 void webrtcAudio.unlockPlayback();
                 const cap = audioEngine.getCaptureSettings();
-                const targetVol = Math.round((cap.musicVolume * deckAVolume) / 100);
+                const targetVol = Math.min(100, Math.round((cap.musicVolume * deckAVolume) / 100));
                 const shouldMuteMusic = cap.musicMuted || targetVol === 0;
                 ytIframeRef.current?.contentWindow?.postMessage(
                   JSON.stringify({ event: 'command', func: shouldMuteMusic ? 'mute' : 'unMute', args: '' }),

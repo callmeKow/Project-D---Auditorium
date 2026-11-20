@@ -143,6 +143,7 @@ class AudioEngine {
   private karaokePreset: KaraokePresetId = 'BALLAD';
   private musicVolume = 80;
   private musicMuted = false;
+  private prerecordedGain: GainNode | null = null;
   private musicBassDb = 0; // -12 .. +14 dB low-shelf EQ at 110Hz
   private musicBassFilter: BiquadFilterNode | null = null;
   private synthBassFilter: BiquadFilterNode | null = null;
@@ -846,10 +847,14 @@ class AudioEngine {
   }
 
   setMusicVolume(volume: number, muted?: boolean) {
-    this.musicVolume = Math.max(0, Math.min(100, Math.round(volume)));
+    this.musicVolume = Math.max(0, Math.min(200, Math.round(volume)));
     if (typeof muted === 'boolean') this.musicMuted = muted;
     if (this.prerecordedAudioEl) {
-      this.prerecordedAudioEl.volume = this.musicMuted ? 0 : this.musicVolume / 100;
+      this.prerecordedAudioEl.volume = this.musicMuted ? 0 : Math.min(1, this.musicVolume / 100);
+    }
+    if (this.prerecordedGain && this.ctx) {
+      const boost = this.musicMuted ? 0 : this.musicVolume > 100 ? this.musicVolume / 100 : 1;
+      this.prerecordedGain.gain.setTargetAtTime(boost, this.ctx.currentTime, 0.02);
     }
     this.persistSettings();
     for (const cb of this.musicListeners) {
@@ -1219,16 +1224,20 @@ class AudioEngine {
     const url = URL.createObjectURL(file);
     const audio = new Audio(url);
     audio.loop = true;
-    audio.volume = this.musicMuted ? 0 : this.musicVolume / 100;
+    audio.volume = this.musicMuted ? 0 : Math.min(1, this.musicVolume / 100);
     audio.crossOrigin = 'anonymous';
     this.prerecordedAudioEl = audio;
 
     const source = ctx.createMediaElementSource(audio);
+    const boostGain = ctx.createGain();
+    boostGain.gain.value = this.musicMuted ? 0 : this.musicVolume > 100 ? this.musicVolume / 100 : 1;
+    this.prerecordedGain = boostGain;
     const bassFilter = this.ensureMusicBassFilter(ctx);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
     const dest = ctx.createMediaStreamDestination();
-    source.connect(bassFilter);
+    source.connect(boostGain);
+    boostGain.connect(bassFilter);
     bassFilter.connect(analyser);
     analyser.connect(dest);
     analyser.connect(ctx.destination);
@@ -1240,6 +1249,7 @@ class AudioEngine {
   }
 
   stopPrerecordedFile() {
+    this.prerecordedGain = null;
     if (this.prerecordedAudioEl) {
       this.prerecordedAudioEl.pause();
       if (this.prerecordedAudioEl.src) {

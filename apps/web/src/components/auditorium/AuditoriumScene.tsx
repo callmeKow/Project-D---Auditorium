@@ -623,7 +623,7 @@ function StageYouTubeCurtains({
             sendYtCmd(activeIframe, 'mute');
           } else {
             sendYtCmd(activeIframe, 'unMute');
-            sendYtCmd(activeIframe, 'setVolume', [musicVolume]);
+            sendYtCmd(activeIframe, 'setVolume', [Math.min(100, musicVolume)]);
             onAutoplayBlocked?.(false);
           }
         } else {
@@ -648,7 +648,7 @@ function StageYouTubeCurtains({
       sendYtCmd(iframe, 'mute');
     } else {
       sendYtCmd(iframe, 'unMute');
-      sendYtCmd(iframe, 'setVolume', [musicVolume]);
+      sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
     }
   }, [musicVolume, musicMuted, audienceMuted, youtubeVideoId, screenVisible, ytSynced]);
 
@@ -672,7 +672,7 @@ function StageYouTubeCurtains({
           sendYtCmd(iframe, 'mute');
         } else {
           sendYtCmd(iframe, 'unMute');
-          sendYtCmd(iframe, 'setVolume', [musicVolume]);
+          sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
         }
       }
       sendYtCmd(iframe, 'playVideo');
@@ -724,14 +724,14 @@ function StageYouTubeCurtains({
         if (st === 1 && ytMutedRef.current) {
           if (hasActivation) {
             sendYtCmd(iframe, 'unMute');
-            sendYtCmd(iframe, 'setVolume', [musicVolume]);
+            sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
           } else if (now - loadedAtRef.current > 2600) {
             onAutoplayBlocked?.(true);
           }
         } else if (st !== 1 && st !== 3) {
           if (hasActivation) {
             sendYtCmd(iframe, 'unMute');
-            sendYtCmd(iframe, 'setVolume', [musicVolume]);
+            sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
             sendYtCmd(iframe, 'playVideo');
           } else if (now - loadedAtRef.current > 2600) {
             sendYtCmd(iframe, 'mute');
@@ -841,7 +841,7 @@ function StageYouTubeCurtains({
                           sendYtCmd(iframe, 'mute');
                         } else {
                           sendYtCmd(iframe, 'unMute');
-                          sendYtCmd(iframe, 'setVolume', [musicVolume]);
+                          sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
                         }
                       }
                       if (isPlaying) {

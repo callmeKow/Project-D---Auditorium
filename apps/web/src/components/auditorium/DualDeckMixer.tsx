@@ -201,7 +201,7 @@ export function DualDeckMixer({
       sendCueYtCmd(iframe, 'mute');
     } else {
       sendCueYtCmd(iframe, 'unMute');
-      sendCueYtCmd(iframe, 'setVolume', [deckBVolume]);
+      sendCueYtCmd(iframe, 'setVolume', [Math.min(100, deckBVolume)]);
     }
     sendCueYtCmd(iframe, 'playVideo');
   }, [deckBVolume, cuePlaying]);
@@ -458,7 +458,7 @@ export function DualDeckMixer({
               label="Deck A Vol"
               valueText={`${deckAVolume}%`}
               min={0}
-              max={100}
+              max={200}
               value={deckAVolume}
               disabled={isAutoMixing}
               onChange={(v) => onDeckAVolumeChange(v)}
@@ -531,7 +531,7 @@ export function DualDeckMixer({
               label="Deck B Vol"
               valueText={`${deckBVolume}%`}
               min={0}
-              max={100}
+              max={200}
               value={deckBVolume}
               disabled={isAutoMixing}
               onChange={(v) => {
