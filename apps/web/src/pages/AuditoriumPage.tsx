@@ -51,7 +51,7 @@ import { GrandPianoSimulator } from '../components/auditorium/GrandPianoSimulato
 import { MicActivityDot, PerformerMicPanel } from '../components/auditorium/PerformerMicPanel';
 import { SyncedMediaPlayer } from '../components/auditorium/SyncedMediaPlayer';
 import { realtimeStore } from '../realtime/realtimeStore';
-import { useAuth } from '../state/authStore';
+import { useAuth, getGuestIdentity } from '../state/authStore';
 import { apiClient, resolveMediaUrl } from '../api/client';
 import { audioEngine } from '../audio/audioEngine';
 import { webrtcAudio, type WebRtcDiagnostics } from '../audio/webrtcAudio';
@@ -79,8 +79,9 @@ export function AuditoriumPage() {
   const navigate = useNavigate();
   const { user, token } = useAuth();
 
-  const effectiveUserId = user?.id ?? 'guest-listener';
-  const effectiveName = user?.displayName ?? 'Guest Listener';
+  const guest = !user ? getGuestIdentity() : null;
+  const effectiveUserId = user?.id ?? guest!.id;
+  const effectiveName = user?.displayName ?? guest!.displayName;
   const effectiveRole = user?.roles.includes('ADMIN')
     ? 'ADMIN'
     : user?.roles.includes('ARTIST')
@@ -88,7 +89,7 @@ export function AuditoriumPage() {
       : user?.roles.includes('HOST')
         ? 'HOST'
         : 'AUDIENCE';
-  const effectiveAvatar = user?.avatarPresetId ?? 'chibi-classic';
+  const effectiveAvatar = user?.avatarPresetId ?? guest?.avatarPresetId ?? 'chibi-classic';
   const navState = location.state as {
     seatId?: string;
     stagePosition?: [number, number, number];

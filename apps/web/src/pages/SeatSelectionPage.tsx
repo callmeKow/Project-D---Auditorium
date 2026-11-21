@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Armchair, ArrowRight, BookmarkCheck, Clock, Sparkles, Lock } from 'lucide-react';
 import type { RoomDTO, SeatDTO } from '@vmw/contracts';
 import { apiClient } from '../api/client';
-import { useAuth } from '../state/authStore';
+import { useAuth, getGuestIdentity } from '../state/authStore';
 
 const TIER_LABEL: Record<string, string> = {
   FRONT_ROW: 'Front Row',
@@ -57,7 +57,7 @@ export function SeatSelectionPage() {
   const [nowMs, setNowMs] = useState(Date.now());
   const [error, setError] = useState<string | null>(null);
 
-  const effectiveUserId = user?.id ?? 'guest-listener';
+  const effectiveUserId = user?.id ?? getGuestIdentity().id;
 
   useEffect(() => {
     if (!roomId) return;

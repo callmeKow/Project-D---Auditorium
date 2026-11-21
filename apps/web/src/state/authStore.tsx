@@ -14,6 +14,41 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 const STORAGE_KEY = 'vmw_session_v1';
+const GUEST_STORAGE_KEY = 'vmw_guest_identity_v1';
+const GUEST_AVATARS: AvatarPresetId[] = ['chibi-classic', 'chibi-acoustic', 'chibi-synth', 'chibi-strings'];
+
+let fallbackGuestIdentity: { id: string; displayName: string; avatarPresetId: AvatarPresetId } | null = null;
+
+/**
+ * Returns a unique per-tab/per-session Guest identity so multiple guests in the same room
+ * never share `'guest-listener'` and overwrite each other on the realtime server.
+ */
+export function getGuestIdentity(): { id: string; displayName: string; avatarPresetId: AvatarPresetId } {
+  try {
+    const raw = sessionStorage.getItem(GUEST_STORAGE_KEY);
+    if (raw) return JSON.parse(raw) as { id: string; displayName: string; avatarPresetId: AvatarPresetId };
+  } catch {
+    // Ignore storage access errors
+  }
+  if (!fallbackGuestIdentity) {
+    const suffix =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID().slice(0, 6)
+        : Math.random().toString(36).slice(2, 8);
+    const avatarPresetId = GUEST_AVATARS[Math.floor(Math.random() * GUEST_AVATARS.length)];
+    fallbackGuestIdentity = {
+      id: `guest-${suffix}`,
+      displayName: `Guest #${suffix.slice(0, 4).toUpperCase()}`,
+      avatarPresetId,
+    };
+    try {
+      sessionStorage.setItem(GUEST_STORAGE_KEY, JSON.stringify(fallbackGuestIdentity));
+    } catch {
+      // Ignore storage access errors
+    }
+  }
+  return fallbackGuestIdentity;
+}
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSessionState] = useState<{ token: string | null; user: UserProfile | null }>(() => {
