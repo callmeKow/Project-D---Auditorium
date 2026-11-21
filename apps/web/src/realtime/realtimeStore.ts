@@ -61,6 +61,7 @@ class RealtimeRoomStore {
   public moderationNotice: string | null = null;
   public systemNotice: string | null = null;
   private ignoreNextLeaveSeatEchoUntil = 0;
+  private bestClockRttMs = Infinity;
 
   private listeners = new Set<Listener>();
   private signalHandler: ((fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: unknown) => void) | null = null;
@@ -405,7 +406,15 @@ class RealtimeRoomStore {
         case 'PONG': {
           const rtt = Math.max(1, Math.round(performance.now() - msg.clientSentAt));
           this.pingMs = rtt;
-          this.serverClockOffsetMs = msg.serverTime - (Date.now() - rtt / 2);
+          const sampleOffset = msg.serverTime - (Date.now() - rtt / 2);
+          // NTP-style min-RTT filter: ignore high-RTT network spikes on cross-network/4G connections
+          if (this.bestClockRttMs === Infinity || rtt <= this.bestClockRttMs * 1.25) {
+            this.bestClockRttMs = Math.min(this.bestClockRttMs, rtt);
+            this.serverClockOffsetMs =
+              this.serverClockOffsetMs === 0 ? sampleOffset : Math.round(this.serverClockOffsetMs * 0.75 + sampleOffset * 0.25);
+          } else {
+            this.bestClockRttMs = this.bestClockRttMs * 1.03; // Slowly decay best RTT if baseline network latency shifts
+          }
           this.emit();
           break;
         }

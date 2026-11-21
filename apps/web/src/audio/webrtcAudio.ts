@@ -17,9 +17,12 @@ export interface WebRtcDiagnostics {
 
 const turnUrl = import.meta.env.VITE_TURN_URL;
 const ICE_SERVERS: RTCConfiguration = {
+  iceCandidatePoolSize: 4,
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
     ...(turnUrl
       ? [
           {
@@ -33,14 +36,15 @@ const ICE_SERVERS: RTCConfiguration = {
 };
 
 /**
- * Tunes Opus SDP parameters for low-latency (10ms ptime) and crisp 48kHz vocal clarity (128kbps).
+ * Tunes Opus SDP parameters for low-latency (20ms ptime, 10ms minptime), in-band FEC for WAN packet loss recovery,
+ * and 96kbps 48kHz clarity that avoids congesting mobile/cross-network uplinks.
  */
 function tuneOpusSdp(sdp?: string): string | undefined {
   if (!sdp) return sdp;
   const match = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000\/2/i);
   if (!match) return sdp;
   const pt = match[1];
-  const desiredParams = 'minptime=10;ptime=10;useinbandfec=1;usedtx=0;maxaveragebitrate=128000;maxplaybackrate=48000;sprop-maxcapturerate=48000';
+  const desiredParams = 'minptime=10;ptime=20;useinbandfec=1;usedtx=0;maxaveragebitrate=96000;maxplaybackrate=48000;sprop-maxcapturerate=48000';
   const fmtpRegex = new RegExp(`(a=fmtp:${pt}\\s+)([^\\r\\n]+)`, 'i');
   if (fmtpRegex.test(sdp)) {
     return sdp.replace(fmtpRegex, `$1${desiredParams}`);
@@ -57,6 +61,10 @@ function tuneOpusSdp(sdp?: string): string | undefined {
  */
 class WebRtcAudioTransport {
   private peers = new Map<string, RTCPeerConnection>();
+  private peerChannels = new Map<string, 'CONCERT' | 'PERFORMER_TALKBACK'>();
+  private pendingIce = new Map<string, RTCIceCandidateInit[]>();
+  private remoteReceivers = new Map<string, RTCRtpReceiver>();
+  private adaptiveTimer: number | null = null;
   private audioElements = new Map<string, HTMLAudioElement>();
   private localStream: MediaStream | null = null;
   private localUserId: string | null = null;
@@ -191,9 +199,63 @@ class WebRtcAudioTransport {
     };
   }
 
+  private ensureAdaptivePlayoutLoop() {
+    if (this.adaptiveTimer !== null) return;
+    this.adaptiveTimer = window.setInterval(() => {
+      if (this.peers.size === 0 && this.adaptiveTimer !== null) {
+        clearInterval(this.adaptiveTimer);
+        this.adaptiveTimer = null;
+        return;
+      }
+      for (const [userId, pc] of this.peers.entries()) {
+        const receiver = this.remoteReceivers.get(userId);
+        if (!receiver) continue;
+        void pc
+          .getStats()
+          .then((stats) => {
+            let rttMs = 0;
+            let jitterMs = 0;
+            stats.forEach((report) => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded' && typeof report.currentRoundTripTime === 'number') {
+                rttMs = report.currentRoundTripTime * 1000;
+              }
+              if (report.type === 'inbound-rtp' && report.kind === 'audio' && typeof report.jitter === 'number') {
+                jitterMs = report.jitter * 1000;
+              }
+            });
+            // Adapt jitter buffer: 20ms on LAN/same-WiFi, 45-160ms on WAN/cross-network to prevent choppy audio
+            const targetHint =
+              rttMs <= 25 && jitterMs <= 8
+                ? 0.02
+                : Math.min(0.16, Math.max(0.045, (jitterMs * 2.5) / 1000 + (rttMs > 120 ? 0.03 : 0.01)));
+            const rx = receiver as unknown as { playoutDelayHint?: number };
+            if (rx && typeof rx === 'object') {
+              try {
+                rx.playoutDelayHint = targetHint;
+              } catch {
+                // Ignore if unsupported
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    }, 2000);
+  }
+
+  private async flushPendingIce(userId: string, pc: RTCPeerConnection) {
+    const queued = this.pendingIce.get(userId);
+    if (!queued || queued.length === 0) return;
+    this.pendingIce.delete(userId);
+    for (const candidate of queued) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+    }
+  }
+
   private createPeerConnection(remoteUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK' = 'CONCERT'): RTCPeerConnection {
     this.closePeer(remoteUserId);
     const pc = new RTCPeerConnection(ICE_SERVERS);
+    this.peerChannels.set(remoteUserId, channel);
+    this.ensureAdaptivePlayoutLoop();
 
     pc.onicecandidate = (ev) => {
       if (ev.candidate) {
@@ -209,11 +271,12 @@ class WebRtcAudioTransport {
     pc.ontrack = (ev) => {
       const [remoteStream] = ev.streams;
       if (!remoteStream) return;
-      // Minimize jitter-buffer playout delay to ~20ms in Chromium for tighter live sync
+      this.remoteReceivers.set(remoteUserId, ev.receiver);
+      // Start with balanced 45ms playout delay; adaptive loop lowers to 20ms on LAN or raises up to 160ms on WAN
       const rx = ev.receiver as unknown as { playoutDelayHint?: number };
       if (rx && typeof rx === 'object') {
         try {
-          rx.playoutDelayHint = 0.02;
+          rx.playoutDelayHint = 0.045;
         } catch {
           // Ignore if unsupported by browser
         }
@@ -236,7 +299,15 @@ class WebRtcAudioTransport {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      if (pc.connectionState === 'disconnected' && this.isBroadcasting && this.localStream) {
+        // Attempt ICE restart if cross-network NAT path drops momentarily
+        window.setTimeout(() => {
+          if (this.peers.get(remoteUserId) === pc && pc.connectionState === 'disconnected' && this.isBroadcasting) {
+            const ch = this.peerChannels.get(remoteUserId) ?? 'CONCERT';
+            void this.createOfferForPeer(remoteUserId, ch, true);
+          }
+        }, 2000);
+      } else if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
         this.closePeer(remoteUserId);
       }
     };
@@ -254,13 +325,20 @@ class WebRtcAudioTransport {
     await Promise.all(artistIds.map((userId) => this.createOfferForPeer(userId, 'PERFORMER_TALKBACK')));
   }
 
-  private async createOfferForPeer(remoteUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK' = 'CONCERT') {
+  private async createOfferForPeer(
+    remoteUserId: string,
+    channel: 'CONCERT' | 'PERFORMER_TALKBACK' = 'CONCERT',
+    iceRestart = false
+  ) {
     if (!this.localStream) return;
-    const pc = this.createPeerConnection(remoteUserId, channel);
-    for (const track of this.localStream.getAudioTracks()) {
-      pc.addTrack(track, this.localStream);
+    const existing = iceRestart ? this.peers.get(remoteUserId) : undefined;
+    const pc = existing ?? this.createPeerConnection(remoteUserId, channel);
+    if (!existing) {
+      for (const track of this.localStream.getAudioTracks()) {
+        pc.addTrack(track, this.localStream);
+      }
     }
-    const rawOffer = await pc.createOffer();
+    const rawOffer = await pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
     const offer: RTCSessionDescriptionInit = {
       type: rawOffer.type,
       sdp: tuneOpusSdp(rawOffer.sdp),
@@ -277,8 +355,10 @@ class WebRtcAudioTransport {
   private async handleSignal(fromUserId: string, channel: 'CONCERT' | 'PERFORMER_TALKBACK', signal: SignalPayload) {
     if (!signal || typeof signal !== 'object') return;
     if (signal.kind === 'offer') {
-      const pc = this.createPeerConnection(fromUserId, channel);
+      const existing = this.peers.get(fromUserId);
+      const pc = existing ?? this.createPeerConnection(fromUserId, channel);
       await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+      await this.flushPendingIce(fromUserId, pc);
       const rawAnswer = await pc.createAnswer();
       const answer: RTCSessionDescriptionInit = {
         type: rawAnswer.type,
@@ -295,16 +375,24 @@ class WebRtcAudioTransport {
       const pc = this.peers.get(fromUserId);
       if (pc && pc.signalingState !== 'stable') {
         await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        await this.flushPendingIce(fromUserId, pc);
       }
     } else if (signal.kind === 'ice') {
       const pc = this.peers.get(fromUserId);
-      if (pc) {
+      if (pc && pc.remoteDescription) {
         await pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(() => {});
+      } else {
+        const queue = this.pendingIce.get(fromUserId) ?? [];
+        queue.push(signal.candidate);
+        this.pendingIce.set(fromUserId, queue);
       }
     }
   }
 
   private closePeer(userId: string) {
+    this.pendingIce.delete(userId);
+    this.peerChannels.delete(userId);
+    this.remoteReceivers.delete(userId);
     const pc = this.peers.get(userId);
     if (pc) {
       pc.close();
@@ -319,6 +407,10 @@ class WebRtcAudioTransport {
   }
 
   destroy() {
+    if (this.adaptiveTimer !== null) {
+      clearInterval(this.adaptiveTimer);
+      this.adaptiveTimer = null;
+    }
     this.stopBroadcast();
     audioEngine.detachRemoteAnalyser();
     realtimeStore.setSignalHandler(null);
