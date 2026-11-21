@@ -1,10 +1,31 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Music, ShieldCheck } from 'lucide-react';
 import type { AvatarPresetId } from '@vmw/contracts';
 import { apiClient } from '../api/client';
 import { useAuth } from '../state/authStore';
 import { CHIBI_PRESET_CATALOG, ChibiPresetAvatarSvg } from '../components/ChibiPresetPreview';
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize: (opts: {
+            client_id: string;
+            callback: (res: { credential?: string }) => void;
+          }) => void;
+          renderButton: (
+            parent: HTMLElement,
+            opts: { theme?: string; size?: string; width?: number; text?: string; shape?: string }
+          ) => void;
+        };
+      };
+    };
+  }
+}
+
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
 
 export function AuthPage() {
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -16,9 +37,66 @@ export function AuthPage() {
   const [avatarPresetId, setAvatarPresetId] = useState<AvatarPresetId>('chibi-classic');
   const [age16Plus, setAge16Plus] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const googleBtnRef = useRef<HTMLDivElement | null>(null);
+  const age16PlusRef = useRef(age16Plus);
+  age16PlusRef.current = age16Plus;
 
   const { setSession } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID || !googleBtnRef.current) return;
+    let cancelled = false;
+
+    const initGoogle = () => {
+      if (cancelled || !googleBtnRef.current || !window.google?.accounts?.id) return;
+      window.google.accounts.id.initialize({
+        client_id: GOOGLE_CLIENT_ID,
+        callback: async (response) => {
+          if (!response.credential) {
+            setError('Không nhận được mã xác thực từ Google.');
+            return;
+          }
+          setError(null);
+          try {
+            const res = await apiClient.loginWithGoogle(response.credential, age16PlusRef.current);
+            setSession(res.token, res.user);
+            navigate('/explore');
+          } catch (err) {
+            setError((err as Error).message);
+          }
+        },
+      });
+      googleBtnRef.current.innerHTML = '';
+      window.google.accounts.id.renderButton(googleBtnRef.current, {
+        theme: 'filled_black',
+        size: 'large',
+        width: 360,
+        text: 'continue_with',
+        shape: 'pill',
+      });
+    };
+
+    if (window.google?.accounts?.id) {
+      initGoogle();
+    } else {
+      const existingScript = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
+      if (existingScript) {
+        existingScript.addEventListener('load', initGoogle, { once: true });
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://accounts.google.com/gsi/client';
+        script.async = true;
+        script.defer = true;
+        script.onload = initGoogle;
+        document.head.appendChild(script);
+      }
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate, setSession]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,23 +290,29 @@ export function AuthPage() {
         </form>
 
         <div className="mt-5 border-t border-stone-800 pt-4">
-          <p className="mb-2.5 text-center text-xs text-stone-400">Or continue with Social Login (SEC-02)</p>
-          <div className="grid grid-cols-2 gap-2.5">
-            <button
-              type="button"
-              onClick={() => handleSocial('GOOGLE')}
-              className="rounded-xl border border-stone-700 bg-stone-950 py-2 text-xs font-semibold text-stone-200 transition hover:bg-stone-800"
-            >
-              Google
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSocial('DISCORD')}
-              className="rounded-xl border border-stone-700 bg-stone-950 py-2 text-xs font-semibold text-stone-200 transition hover:bg-stone-800"
-            >
-              Discord
-            </button>
-          </div>
+          <p className="mb-2.5 text-center text-xs text-stone-400">Hoặc tiếp tục bằng tài khoản Google</p>
+          {GOOGLE_CLIENT_ID ? (
+            <div className="flex justify-center">
+              <div ref={googleBtnRef} className="min-h-[40px]" />
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={() => handleSocial('GOOGLE')}
+                className="rounded-xl border border-stone-700 bg-stone-950 py-2 text-xs font-semibold text-stone-200 transition hover:bg-stone-800"
+              >
+                Google (Demo)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSocial('DISCORD')}
+                className="rounded-xl border border-stone-700 bg-stone-950 py-2 text-xs font-semibold text-stone-200 transition hover:bg-stone-800"
+              >
+                Discord (Demo)
+              </button>
+            </div>
+          )}
 
           {mode === 'login' && (
             <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-stone-950/80 p-2.5 text-[11px] text-stone-400">

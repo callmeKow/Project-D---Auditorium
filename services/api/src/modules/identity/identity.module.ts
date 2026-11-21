@@ -7,6 +7,7 @@ import { loadSnapshot, saveSnapshot } from '../../infrastructure/persistence.js'
 interface StoredUser extends UserProfile {
   username?: string;
   passwordHash?: string;
+  googleSub?: string;
 }
 
 interface AdminLocalConfig {
@@ -23,7 +24,23 @@ const sessions = new Map<string, string>(); // token -> userId
 const SESSION_SECRET = process.env.VMW_SESSION_SECRET ?? 'vmw-dev-session-secret-v1';
 
 function hashPassword(pw: string): string {
-  return crypto.createHash('sha256').update(pw).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(pw, salt, 64).toString('hex');
+  return `scrypt:${salt}:${derived}`;
+}
+
+function verifyPassword(pw: string, storedHash?: string): boolean {
+  if (!storedHash) return false;
+  if (storedHash.startsWith('scrypt:')) {
+    const [, salt, hex] = storedHash.split(':');
+    if (!salt || !hex) return false;
+    const derived = crypto.scryptSync(pw, salt, 64);
+    const expected = Buffer.from(hex, 'hex');
+    if (derived.length !== expected.length) return false;
+    return crypto.timingSafeEqual(derived, expected);
+  }
+  // Legacy SHA-256 fallback for existing seeded/local accounts
+  return crypto.createHash('sha256').update(pw).digest('hex') === storedHash;
 }
 
 function issueToken(userId: string): string {
@@ -197,7 +214,7 @@ export function loginWithEmail(emailOrUsername: string, password: string): { tok
     const matchesIdentity =
       user.email.toLowerCase() === normalized ||
       (user.username ? user.username.toLowerCase() === normalized : false);
-    if (matchesIdentity && user.passwordHash === hashPassword(password)) {
+    if (matchesIdentity && verifyPassword(password, user.passwordHash)) {
       const token = issueToken(user.id);
       return { token, user: stripSecrets(user) };
     }
@@ -229,6 +246,79 @@ export function loginWithSocial(params: {
     avatarPresetId: 'chibi-acoustic',
     ageConfirmed16Plus: true,
     authProvider: params.provider,
+    createdAt: Date.now(),
+  };
+  users.set(user.id, user);
+  persistUsers();
+  const token = issueToken(user.id);
+  return { token, user: stripSecrets(user) };
+}
+
+export function rehydrateIdentityFromPersistence(): void {
+  users.clear();
+  sessions.clear();
+  seedDefaultUsers();
+}
+
+export async function loginWithGoogleIdToken(params: {
+  idToken: string;
+  ageConfirmed16Plus: boolean;
+}): Promise<{ token: string; user: UserProfile }> {
+  if (!params.ageConfirmed16Plus) {
+    throw new Error('AGE_POLICY_VIOLATION: Users must confirm they are 16+ (SEC-18).');
+  }
+  const idToken = params.idToken?.trim();
+  if (!idToken) {
+    throw new Error('GOOGLE_TOKEN_REQUIRED');
+  }
+
+  const verifyRes = await fetch(
+    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`
+  );
+  if (!verifyRes.ok) {
+    throw new Error('INVALID_GOOGLE_TOKEN');
+  }
+
+  const payload = (await verifyRes.json()) as {
+    sub?: string;
+    email?: string;
+    email_verified?: string | boolean;
+    name?: string;
+    aud?: string;
+  };
+
+  const expectedClientId = process.env.GOOGLE_CLIENT_ID?.trim();
+  if (expectedClientId && payload.aud !== expectedClientId) {
+    throw new Error('GOOGLE_CLIENT_ID_MISMATCH');
+  }
+  if (!payload.sub || !payload.email) {
+    throw new Error('INVALID_GOOGLE_PROFILE');
+  }
+  if (payload.email_verified !== true && payload.email_verified !== 'true') {
+    throw new Error('GOOGLE_EMAIL_NOT_VERIFIED');
+  }
+
+  const normalizedEmail = payload.email.trim().toLowerCase();
+  for (const existing of users.values()) {
+    if (existing.googleSub === payload.sub || existing.email === normalizedEmail) {
+      if (!existing.googleSub) {
+        existing.googleSub = payload.sub;
+        persistUsers();
+      }
+      const token = issueToken(existing.id);
+      return { token, user: stripSecrets(existing) };
+    }
+  }
+
+  const user: StoredUser = {
+    id: `user-${crypto.randomUUID().slice(0, 8)}`,
+    email: normalizedEmail,
+    displayName: (payload.name || normalizedEmail.split('@')[0] || 'Google User').trim(),
+    roles: ['AUDIENCE'],
+    avatarPresetId: 'chibi-acoustic',
+    ageConfirmed16Plus: true,
+    authProvider: 'GOOGLE',
+    googleSub: payload.sub,
     createdAt: Date.now(),
   };
   users.set(user.id, user);

@@ -92,6 +92,14 @@ export interface SetlistItemDTO {
   mediaType?: 'AUDIO' | 'VIDEO';
 }
 
+export interface KaraokeScoreEntryDTO {
+  id: string;
+  trackTitle: string;
+  singerName: string;
+  score: number;
+  timestamp: number;
+}
+
 export interface ConcertDTO {
   id: string;
   roomId: string;
@@ -112,6 +120,7 @@ export interface ConcertDTO {
     mic2UserId?: string;
     mic2Name?: string;
   };
+  karaokeLeaderboard?: KaraokeScoreEntryDTO[];
   isSpontaneous: boolean;
   trackPlaying?: boolean;
   trackStartedAtServerMs?: number;

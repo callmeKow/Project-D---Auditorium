@@ -487,6 +487,20 @@ export function attachRealtimeGateway(server: HttpServer) {
                   ? Math.max(75, Math.min(100, Math.round(parsed.karaokeScore)))
                   : Math.floor(78 + Math.random() * 23)
                 : undefined;
+            if (typeof karaokeScore === 'number' && room.venueStyle === 'KARAOKE') {
+              const singers = [concert.karaokeMics?.mic1Name, concert.karaokeMics?.mic2Name].filter(Boolean);
+              const singerName = singers.length > 0 ? singers.join(' & ') : session.displayName;
+              const history = concert.karaokeLeaderboard ?? [];
+              history.unshift({
+                id: `score-${crypto.randomUUID().slice(0, 8)}`,
+                trackTitle: item?.title ?? 'Karaoke Track',
+                singerName,
+                score: karaokeScore,
+                timestamp: Date.now(),
+              });
+              if (history.length > 30) history.length = 30;
+              concert.karaokeLeaderboard = history;
+            }
             broadcastToRoom(session.roomId, {
               priority: 'P2',
               type: 'SONG_ENDED_APPLAUSE',

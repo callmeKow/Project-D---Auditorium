@@ -67,6 +67,13 @@ export const apiClient = {
     });
   },
 
+  loginWithGoogle(idToken: string, ageConfirmed16Plus: boolean) {
+    return request<{ token: string; user: UserProfile }>('/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ idToken, ageConfirmed16Plus }),
+    });
+  },
+
   updateAvatarPreset(avatarPresetId: AvatarPresetId, token: string) {
     return request<UserProfile>(
       '/profiles/avatar',

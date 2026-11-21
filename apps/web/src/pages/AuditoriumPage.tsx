@@ -46,6 +46,7 @@ import {
   type RoomDTO,
 } from '@vmw/contracts';
 import { AuditoriumScene, type CameraMode } from '../components/auditorium/AuditoriumScene';
+import { getAudienceAssetProgress, subscribeAudienceAssetProgress } from '../components/auditorium/audienceRigAssets';
 import { DualDeckMixer } from '../components/auditorium/DualDeckMixer';
 import { GrandPianoSimulator } from '../components/auditorium/GrandPianoSimulator';
 import { MicActivityDot, PerformerMicPanel } from '../components/auditorium/PerformerMicPanel';
@@ -110,6 +111,7 @@ export function AuditoriumPage() {
   // Temporarily locked to LOW quality until further configuration
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>('LOW');
   const [perf, setPerf] = useState({ fps: 60, drawCalls: 0 });
+  const [assetLoadPct, setAssetLoadPct] = useState<number>(() => getAudienceAssetProgress());
   const [pingMs, setPingMs] = useState<number | null>(realtimeStore.pingMs);
   const [lowFpsStreak, setLowFpsStreak] = useState(0);
 
@@ -218,6 +220,8 @@ export function AuditoriumPage() {
     Boolean(room?.concert.invitedPerformerIds.includes(effectiveUserId));
   const canUsePerformControls = isPerformerOrHost || isPublicOpenRoom;
   const canEditLighting = canUsePerformControls; // Host/Artist/Admin, or any participant in public Karaoke/Chamber mode
+
+  useEffect(() => subscribeAudienceAssetProgress(setAssetLoadPct), []);
 
   useEffect(() => {
     if (!roomId) return;
@@ -1183,6 +1187,20 @@ export function AuditoriumPage() {
           </div>
         )}
 
+        {/* 3D Asset Loading Progress Pill (shows while base Chibi rig downloads) */}
+        {assetLoadPct < 100 && (
+          <div className="pointer-events-none absolute left-1/2 top-4 z-20 flex -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-amber-400/40 bg-stone-950/90 px-4 py-2 text-xs font-semibold text-amber-200 shadow-xl backdrop-blur">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
+            <span>Đang tải nhân vật 3D... {assetLoadPct}%</span>
+            <div className="h-1.5 w-20 overflow-hidden rounded-full bg-stone-800">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-amber-400 to-fuchsia-500 transition-all duration-200"
+                style={{ width: `${Math.max(8, assetLoadPct)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {/* Autoplay-Blocked Notice (only shown when a fresh tab hasn't received any browser click yet) */}
         {autoplayBlocked && (
           <button
@@ -1920,6 +1938,85 @@ export function AuditoriumPage() {
                   )}
                 </div>
               </div>
+
+              {/* Karaoke Session Leaderboard (Top Singers + Recent History) */}
+              {isKaraoke && (
+                <div className="rounded-xl border border-fuchsia-500/35 bg-gradient-to-br from-fuchsia-950/40 via-stone-950/90 to-indigo-950/40 p-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-fuchsia-300">
+                      🏆 BXH Karaoke Phiên Này
+                    </span>
+                    <span className="text-[10px] text-stone-400">
+                      {(room.concert.karaokeLeaderboard ?? []).length} lượt hát
+                    </span>
+                  </div>
+                  {(room.concert.karaokeLeaderboard ?? []).length === 0 ? (
+                    <p className="mt-1.5 text-[10px] text-stone-400">
+                      Chưa có điểm nào. Hát hết bài hoặc bấm End Song để lưu điểm lên BXH!
+                    </p>
+                  ) : (
+                    <div className="mt-2 space-y-2">
+                      {/* Top 5 Highest Scores */}
+                      <div className="space-y-1">
+                        {[...(room.concert.karaokeLeaderboard ?? [])]
+                          .sort((a, b) => b.score - a.score)
+                          .slice(0, 5)
+                          .map((entry, idx) => {
+                            const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+                            const rank =
+                              entry.score >= 95 ? 'S+' : entry.score >= 90 ? 'S' : entry.score >= 82 ? 'A' : 'B';
+                            return (
+                              <div
+                                key={entry.id}
+                                className="flex items-center justify-between gap-2 rounded-lg border border-stone-800/80 bg-stone-900/70 px-2 py-1"
+                              >
+                                <div className="flex min-w-0 items-center gap-1.5">
+                                  <span className="w-5 shrink-0 text-center text-[11px] font-bold">{medal}</span>
+                                  <div className="min-w-0">
+                                    <div className="truncate text-[11px] font-semibold text-white">
+                                      {entry.singerName}
+                                    </div>
+                                    <div className="truncate text-[9px] text-stone-400">{entry.trackTitle}</div>
+                                  </div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <span className="rounded bg-fuchsia-500/20 px-1 py-0.5 text-[9px] font-bold text-fuchsia-300">
+                                    {rank}
+                                  </span>
+                                  <span className="font-mono text-xs font-extrabold text-amber-300">
+                                    {entry.score}
+                                  </span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+
+                      {/* Recent 4 Songs History */}
+                      {(room.concert.karaokeLeaderboard ?? []).length > 1 && (
+                        <div className="border-t border-stone-800/80 pt-1.5">
+                          <div className="mb-1 text-[9px] font-bold uppercase tracking-wider text-stone-400">
+                            Lịch sử bài vừa hát
+                          </div>
+                          <div className="space-y-0.5">
+                            {(room.concert.karaokeLeaderboard ?? []).slice(0, 4).map((entry) => (
+                              <div
+                                key={`hist-${entry.id}`}
+                                className="flex items-center justify-between gap-2 text-[10px] text-stone-300"
+                              >
+                                <span className="truncate">
+                                  🎤 <strong className="text-stone-100">{entry.singerName}</strong> — {entry.trackTitle}
+                                </span>
+                                <span className="shrink-0 font-mono font-bold text-amber-300">{entry.score}/100</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Editable Setlist + Playback Mode + Drag & Drop Reorder (SM-08) */}
               <div>

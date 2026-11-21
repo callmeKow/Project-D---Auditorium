@@ -7,8 +7,12 @@ import { CHIBI_PRESET_CATALOG } from './ChibiPresetPreview';
 import { CHIBI_RIG_SCALE } from './auditorium/chibiCharacterKit';
 import {
   cloneAudienceRig,
+  ensureDanceClipLoaded,
+  getAudienceAssetProgress,
   getCachedAudienceRigAssets,
   loadAudienceRigAssets,
+  subscribeAudienceAssetProgress,
+  subscribeDanceClipLoaded,
   type AudienceClipKey,
   type AudienceRigAssets,
 } from './auditorium/audienceRigAssets';
@@ -70,6 +74,30 @@ function DancingChibiModel({
   }, [assets, presetId]);
 
   useEffect(() => {
+    void ensureDanceClipLoaded(clipKey);
+  }, [clipKey]);
+
+  useEffect(() => {
+    return subscribeDanceClipLoaded((key, clip) => {
+      const oldAction = actions[key];
+      const wasActive = activeKeyRef.current === key;
+      const newAction = mixer.clipAction(clip);
+      newAction.setLoop(THREE.LoopRepeat, Infinity);
+      actions[key] = newAction;
+      if (wasActive) {
+        newAction.reset();
+        newAction.enabled = true;
+        newAction.setEffectiveTimeScale(1);
+        newAction.setEffectiveWeight(1);
+        newAction.play();
+        if (oldAction && oldAction !== newAction) {
+          oldAction.crossFadeTo(newAction, 0.25, true);
+        }
+      }
+    });
+  }, [mixer, actions]);
+
+  useEffect(() => {
     return () => {
       mixer.stopAllAction();
     };
@@ -113,8 +141,11 @@ function DancingChibiModel({
 
 export function LandingDanceShowcase3D() {
   const [assets, setAssets] = useState<AudienceRigAssets | null>(() => getCachedAudienceRigAssets());
+  const [loadPct, setLoadPct] = useState<number>(() => getAudienceAssetProgress());
   const [selectedMode, setSelectedMode] = useState<'MIX' | ShowcaseDanceKey>('MIX');
   const [autoCycleIndex, setAutoCycleIndex] = useState(0);
+
+  useEffect(() => subscribeAudienceAssetProgress(setLoadPct), []);
 
   useEffect(() => {
     if (assets) return;
@@ -180,8 +211,14 @@ export function LandingDanceShowcase3D() {
       {/* 3D Mini-Stage Canvas */}
       <div className="relative h-56 w-full overflow-hidden rounded-2xl border border-stone-800/90 bg-gradient-to-b from-stone-950 via-[#150f1e] to-stone-950 sm:h-64">
         {!assets ? (
-          <div className="flex h-full w-full items-center justify-center text-xs text-stone-400">
-            Đang tải 4 nhân vật Chibi 3D &amp; 5 điệu nhảy...
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-6 text-xs text-stone-300">
+            <span>Đang tải nhân vật Chibi 3D... {loadPct}%</span>
+            <div className="h-1.5 w-48 overflow-hidden rounded-full bg-stone-800">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-amber-400 via-pink-500 to-fuchsia-500 transition-all duration-200"
+                style={{ width: `${Math.max(8, loadPct)}%` }}
+              />
+            </div>
           </div>
         ) : (
           <Canvas camera={{ position: [0, 1.45, 4.3], fov: 36 }} dpr={[1, 1.5]}>

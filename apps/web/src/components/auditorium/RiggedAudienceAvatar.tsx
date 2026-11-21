@@ -8,9 +8,12 @@ import { ChibiAvatar } from './ChibiAvatar';
 import { CHIBI_NAMEPLATE_Y, CHIBI_RIG_SCALE, CHIBI_SIT_LIFT } from './chibiCharacterKit';
 import {
   cloneAudienceRig,
+  ensureDanceClipLoaded,
   getCachedAudienceRigAssets,
+  isDanceClipKey,
   loadAudienceRigAssets,
   mapAnimationToClipKey,
+  subscribeDanceClipLoaded,
   type AudienceClipKey,
   type AudienceRigAssets,
 } from './audienceRigAssets';
@@ -106,6 +109,26 @@ function LoadedRiggedAudienceAvatar({
   }, [rig, qualityPreset]);
 
   useEffect(() => {
+    return subscribeDanceClipLoaded((key, clip) => {
+      const oldAction = actions[key];
+      const wasActive = activeKeyRef.current === key;
+      const newAction = mixer.clipAction(clip);
+      newAction.setLoop(THREE.LoopRepeat, Infinity);
+      actions[key] = newAction;
+      if (wasActive) {
+        newAction.reset();
+        newAction.enabled = true;
+        newAction.setEffectiveTimeScale(1);
+        newAction.setEffectiveWeight(1);
+        newAction.play();
+        if (oldAction && oldAction !== newAction) {
+          oldAction.crossFadeTo(newAction, 0.25, true);
+        }
+      }
+    });
+  }, [mixer, actions]);
+
+  useEffect(() => {
     const activeAction = actions[activeKeyRef.current];
     if (activeAction) {
       activeAction.reset();
@@ -135,6 +158,9 @@ function LoadedRiggedAudienceAvatar({
 
     const nextKey = mapAnimationToClipKey(entry.animation);
     if (nextKey !== activeKeyRef.current) {
+      if (isDanceClipKey(nextKey)) {
+        void ensureDanceClipLoaded(nextKey);
+      }
       const prevAction = actions[activeKeyRef.current];
       const nextAction = actions[nextKey];
       if (nextAction) {

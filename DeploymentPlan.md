@@ -18,8 +18,11 @@
    - **Branch:** `main`
    - **Build Command:** `npm ci --include=dev && npm --workspace=@vmw/api run build`
    - **Start Command:** `node services/api/dist/server.js`
-   - **Health Check Path:** `/health`
-   - **Env Vars:** `CORS_ORIGIN` *(tùy chọn, mặc định cho phép tất cả nếu không đặt; đặt `https://project-d---auditorium.pages.dev` nếu muốn khóa CORS)*.
+   - **Health Check Path:** `/health` *(có thêm trường `databaseConnected: true/false` để kiểm tra Neon PostgreSQL)*
+   - **Env Vars:**
+     - `DATABASE_URL` = `<Connection String từ Neon PostgreSQL (Singapore)>` *(lưu bền vững `users`, `sessions`, `rooms`, `setlist`)*
+     - `GOOGLE_CLIENT_ID` = `<Google OAuth 2.0 Web Client ID>` *(xác thực token đăng nhập Google thật)*
+     - `CORS_ORIGIN` *(tùy chọn, mặc định cho phép tất cả nếu không đặt; đặt `https://project-d---auditorium.pages.dev` nếu muốn khóa CORS)*.
    - **Lưu ý vận hành:** Gói Render Free tự ngủ sau 15 phút không có request (cold start ~30–50s); có thể dùng `cron-job.org` ping `/health` mỗi 10 phút.
 
 2. **Cloudflare Pages (`project-d---auditorium` / `kowie-auditorium`):**
@@ -29,6 +32,7 @@
    - **Env Vars:**
      - `VITE_API_URL` = `https://kowie-auditorium.onrender.com`
      - `VITE_WS_URL` = `wss://kowie-auditorium.onrender.com/ws`
+     - `VITE_GOOGLE_CLIENT_ID` = `<Google OAuth 2.0 Web Client ID>` *(bật nút Đăng nhập Google thật trên `/auth`)*
      - *(Tùy chọn cho WebRTC Mic qua nhiều mạng NAT khác nhau)*: `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL`.
 
 ---

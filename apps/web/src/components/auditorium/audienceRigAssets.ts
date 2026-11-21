@@ -412,53 +412,138 @@ function retargetMixamoFbxClip(
   return clip;
 }
 
+export type DanceClipKey = 'DANCE' | 'DANCE_2' | 'DANCE_3' | 'DANCE_4' | 'DANCE_5';
+
+const DANCE_FBX_URLS: Record<DanceClipKey, string> = {
+  DANCE: '/models/samba-dancing.fbx',
+  DANCE_2: '/models/arms-hip-hop-dance.fbx',
+  DANCE_3: '/models/northern-soul-spin-combo.fbx',
+  DANCE_4: '/models/samba-dancing-2.fbx',
+  DANCE_5: '/models/ymca-dance.fbx',
+};
+
+let assetLoadProgress = 0; // 0..100
+const progressListeners = new Set<(pct: number) => void>();
+const danceLoadedListeners = new Set<(key: DanceClipKey, clip: THREE.AnimationClip) => void>();
+const loadedDanceKeys = new Set<DanceClipKey>();
+const danceLoadPromises = new Map<DanceClipKey, Promise<THREE.AnimationClip | null>>();
+let backgroundPrefetchStarted = false;
+
+function emitProgress(pct: number) {
+  const clamped = Math.max(0, Math.min(100, Math.round(pct)));
+  if (clamped === assetLoadProgress) return;
+  assetLoadProgress = clamped;
+  for (const cb of progressListeners) cb(clamped);
+}
+
+export function getAudienceAssetProgress(): number {
+  return cachedAssets ? 100 : assetLoadProgress;
+}
+
+export function subscribeAudienceAssetProgress(cb: (pct: number) => void): () => void {
+  progressListeners.add(cb);
+  cb(getAudienceAssetProgress());
+  return () => progressListeners.delete(cb);
+}
+
+export function subscribeDanceClipLoaded(cb: (key: DanceClipKey, clip: THREE.AnimationClip) => void): () => void {
+  danceLoadedListeners.add(cb);
+  return () => danceLoadedListeners.delete(cb);
+}
+
+export function isDanceClipKey(key: AudienceClipKey): key is DanceClipKey {
+  return key === 'DANCE' || key === 'DANCE_2' || key === 'DANCE_3' || key === 'DANCE_4' || key === 'DANCE_5';
+}
+
+export function ensureDanceClipLoaded(key: DanceClipKey): Promise<THREE.AnimationClip | null> {
+  if (!cachedAssets) return Promise.resolve(null);
+  if (loadedDanceKeys.has(key)) return Promise.resolve(cachedAssets.clips[key]);
+  const existing = danceLoadPromises.get(key);
+  if (existing) return existing;
+
+  const fbxLoader = new FBXLoader();
+  const promise = fbxLoader
+    .loadAsync(DANCE_FBX_URLS[key])
+    .then((loaded) => {
+      if (!cachedAssets) return null;
+      const raw = loaded.animations.find((a) => a.tracks.length > 0 && a.duration > 1) ?? loaded.animations[0];
+      if (!raw) return null;
+      const retargeted = retargetMixamoFbxClip(loaded, cachedAssets.templateScene, raw);
+      cachedAssets.clips[key] = retargeted;
+      loadedDanceKeys.add(key);
+      for (const cb of danceLoadedListeners) cb(key, retargeted);
+      return retargeted;
+    })
+    .catch(() => null);
+
+  danceLoadPromises.set(key, promise);
+  return promise;
+}
+
+function startBackgroundDancePrefetch() {
+  if (backgroundPrefetchStarted) return;
+  backgroundPrefetchStarted = true;
+  // Prefetch sequentially from smallest to largest so initial room rendering stays smooth
+  const order: DanceClipKey[] = ['DANCE_5', 'DANCE_3', 'DANCE_4', 'DANCE_2', 'DANCE'];
+  void (async () => {
+    for (const key of order) {
+      await ensureDanceClipLoaded(key);
+    }
+  })();
+}
+
 export function loadAudienceRigAssets(): Promise<AudienceRigAssets> {
   if (cachedAssets) return Promise.resolve(cachedAssets);
   if (loadPromise) return loadPromise;
 
   const gltfLoader = new GLTFLoader();
-  const fbxLoader = new FBXLoader();
+  emitProgress(5);
 
-  loadPromise = Promise.all([
-    gltfLoader.loadAsync('/models/xbot.glb'),
-    fbxLoader.loadAsync('/models/samba-dancing.fbx'),
-    fbxLoader.loadAsync('/models/arms-hip-hop-dance.fbx'),
-    fbxLoader.loadAsync('/models/northern-soul-spin-combo.fbx'),
-    fbxLoader.loadAsync('/models/samba-dancing-2.fbx'),
-    fbxLoader.loadAsync('/models/ymca-dance.fbx'),
-  ]).then(([gltf, fbx, fbx2, fbx3, fbx4, fbx5]) => {
-    const idleClip = gltf.animations.find((a) => a.name === 'idle') ?? gltf.animations[0];
-    const walkClip = gltf.animations.find((a) => a.name === 'walk') ?? idleClip;
-    const extractDanceClip = (loaded: THREE.Group) => {
-      const raw = loaded.animations.find((a) => a.tracks.length > 0 && a.duration > 1) ?? loaded.animations[0];
-      return retargetMixamoFbxClip(loaded, gltf.scene, raw);
-    };
-    const fbxDance = extractDanceClip(fbx);
-    const fbxDance2 = extractDanceClip(fbx2);
-    const fbxDance3 = extractDanceClip(fbx3);
-    const fbxDance4 = extractDanceClip(fbx4);
-    const fbxDance5 = extractDanceClip(fbx5);
+  loadPromise = new Promise<AudienceRigAssets>((resolve, reject) => {
+    gltfLoader.load(
+      '/models/xbot.glb',
+      (gltf) => {
+        const idleClip = gltf.animations.find((a) => a.name === 'idle') ?? gltf.animations[0];
+        const walkClip = gltf.animations.find((a) => a.name === 'walk') ?? idleClip;
+        const danceFallback = buildCheerClip();
 
-    const assets: AudienceRigAssets = {
-      templateScene: gltf.scene,
-      clips: {
-        IDLE: idleClip,
-        WALK: walkClip,
-        SIT: buildSitClip(),
-        CLAP: buildClapClip(),
-        CHEER: buildCheerClip(),
-        WAVE: buildWaveClip(),
-        DANCE: fbxDance,
-        DANCE_2: fbxDance2,
-        DANCE_3: fbxDance3,
-        DANCE_4: fbxDance4,
-        DANCE_5: fbxDance5,
-        AFK: buildAfkClip(),
-        PLAY: buildPlayClip(),
+        const assets: AudienceRigAssets = {
+          templateScene: gltf.scene,
+          clips: {
+            IDLE: idleClip,
+            WALK: walkClip,
+            SIT: buildSitClip(),
+            CLAP: buildClapClip(),
+            CHEER: buildCheerClip(),
+            WAVE: buildWaveClip(),
+            DANCE: danceFallback,
+            DANCE_2: danceFallback,
+            DANCE_3: danceFallback,
+            DANCE_4: danceFallback,
+            DANCE_5: danceFallback,
+            AFK: buildAfkClip(),
+            PLAY: buildPlayClip(),
+          },
+        };
+        cachedAssets = assets;
+        emitProgress(100);
+        // Lazy-load the 5 dance FBX files sequentially in background after base rig is ready
+        window.setTimeout(startBackgroundDancePrefetch, 400);
+        resolve(assets);
       },
-    };
-    cachedAssets = assets;
-    return assets;
+      (xhr) => {
+        if (xhr.lengthComputable && xhr.total > 0) {
+          emitProgress(5 + (xhr.loaded / xhr.total) * 90);
+        } else if (xhr.loaded > 0) {
+          // xbot.glb is ~2.93 MB
+          emitProgress(5 + Math.min(90, (xhr.loaded / 2_930_032) * 90));
+        }
+      },
+      (err) => {
+        loadPromise = null;
+        reject(err);
+      }
+    );
   });
 
   return loadPromise;

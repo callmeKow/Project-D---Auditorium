@@ -9,8 +9,10 @@ import {
   exportUserData,
   getUserByToken,
   loginWithEmail,
+  loginWithGoogleIdToken,
   loginWithSocial,
   registerWithEmail,
+  rehydrateIdentityFromPersistence,
   updateAvatarPreset,
 } from './modules/identity/identity.module.js';
 import {
@@ -19,9 +21,11 @@ import {
   getRoomById,
   listRooms,
   persistRooms,
+  rehydrateRoomsFromPersistence,
   setRoomState,
   verifyRoomPasscode,
 } from './modules/room/room.module.js';
+import { initDatabasePersistence, isDatabaseConnected } from './infrastructure/persistence.js';
 import { holdSeat, reserveSeat, toggleSeatLock } from './modules/seating/seating.module.js';
 import {
   applyModerationAction,
@@ -61,6 +65,7 @@ export function createApp() {
       uptimeSec: Math.round(process.uptime()),
       activeRooms: listRooms().length,
       connectedClients: getConnectedClientCount(),
+      databaseConnected: isDatabaseConnected(),
     });
   });
 
@@ -90,6 +95,18 @@ export function createApp() {
   app.post('/auth/social', (req, res) => {
     try {
       const result = loginWithSocial(req.body);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/auth/google', async (req, res) => {
+    try {
+      const result = await loginWithGoogleIdToken({
+        idToken: String(req.body?.idToken ?? ''),
+        ageConfirmed16Plus: Boolean(req.body?.ageConfirmed16Plus ?? true),
+      });
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: (err as Error).message });
@@ -409,11 +426,17 @@ export function createApp() {
 
 if (!process.env.VITEST) {
   const PORT = Number(process.env.PORT ?? 4000);
-  const app = createApp();
-  const server = http.createServer(app);
-  attachRealtimeGateway(server);
+  void (async () => {
+    await initDatabasePersistence();
+    rehydrateIdentityFromPersistence();
+    rehydrateRoomsFromPersistence();
 
-  server.listen(PORT, () => {
-    console.log(`[VMW API] Modular Monolith + Realtime Gateway listening on http://localhost:${PORT}`);
-  });
+    const app = createApp();
+    const server = http.createServer(app);
+    attachRealtimeGateway(server);
+
+    server.listen(PORT, () => {
+      console.log(`[VMW API] Modular Monolith + Realtime Gateway listening on http://localhost:${PORT}`);
+    });
+  })();
 }

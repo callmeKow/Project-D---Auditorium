@@ -271,6 +271,12 @@ export function persistRooms() {
   });
 }
 
+export function rehydrateRoomsFromPersistence() {
+  rooms.clear();
+  roomPasscodes.clear();
+  seedInitialRooms();
+}
+
 seedInitialRooms();
 
 export function listRooms(): RoomDTO[] {
