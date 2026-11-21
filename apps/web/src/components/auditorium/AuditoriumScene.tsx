@@ -357,6 +357,11 @@ function sendYtCmd(iframe: HTMLIFrameElement | null, func: string, args: unknown
   iframe.contentWindow.postMessage(JSON.stringify({ event: 'command', func, args }), '*');
 }
 
+function getYtOriginParam(): string {
+  if (typeof window === 'undefined' || !window.location?.origin) return '';
+  return `&origin=${encodeURIComponent(window.location.origin)}`;
+}
+
 function KaraokeScreenScoreOverlay({
   scoreCard,
 }: {
@@ -623,7 +628,8 @@ function StageYouTubeCurtains({
         const dur = ytDurationRef.current;
         const rawDiff = Math.abs(ytTimeRef.current - targetSec);
         const circularDiff = dur > 1 ? Math.min(rawDiff, dur - rawDiff) : rawDiff;
-        const inSyncNow = targetSec <= 1.5 || circularDiff <= 2.5;
+        const waitedTooLong = performance.now() - loadedAtRef.current > 2200;
+        const inSyncNow = targetSec <= 1.5 || circularDiff <= 2.5 || waitedTooLong;
         if (inSyncNow) {
           setSyncedState(true);
           setYtActiveVisual(true);
@@ -720,8 +726,22 @@ function StageYouTubeCurtains({
       }
 
       const st = ytStateRef.current;
+      if (st === -1) {
+        iframe.contentWindow?.postMessage(JSON.stringify({ event: 'listening' }), '*');
+      }
       const hasActivation =
         (navigator as unknown as { userActivation?: { hasBeenActive?: boolean } }).userActivation?.hasBeenActive ?? false;
+
+      // Safety release: never trap late-joining viewers behind the loading overlay / mute gate forever
+      if (!ytSyncedRef.current && now - loadedAtRef.current > 2400) {
+        setSyncedState(true);
+        setYtActiveVisual(true);
+        if (targetSec > 1.5 && now - lastSeekAtRef.current > 1000) {
+          lastSeekAtRef.current = now;
+          sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+        }
+        sendYtCmd(iframe, 'playVideo');
+      }
 
       if (!ytSyncedRef.current) {
         if (!ytMutedRef.current) sendYtCmd(iframe, 'mute');
@@ -733,7 +753,7 @@ function StageYouTubeCurtains({
           if (hasActivation) {
             sendYtCmd(iframe, 'unMute');
             sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
-          } else if (now - loadedAtRef.current > 2600) {
+          } else if (now - loadedAtRef.current > 2400) {
             onAutoplayBlocked?.(true);
           }
         } else if (st !== 1 && st !== 3) {
@@ -741,7 +761,7 @@ function StageYouTubeCurtains({
             sendYtCmd(iframe, 'unMute');
             sendYtCmd(iframe, 'setVolume', [Math.min(100, musicVolume)]);
             sendYtCmd(iframe, 'playVideo');
-          } else if (now - loadedAtRef.current > 2600) {
+          } else if (now - loadedAtRef.current > 2400) {
             sendYtCmd(iframe, 'mute');
             sendYtCmd(iframe, 'playVideo');
             onAutoplayBlocked?.(true);
@@ -750,7 +770,7 @@ function StageYouTubeCurtains({
       } else if (!ytMutedRef.current) {
         sendYtCmd(iframe, 'mute');
       }
-    }, 1800);
+    }, 1200);
     return () => clearInterval(checkTimer);
   }, [youtubeVideoId, isPlaying, screenVisible, audienceMuted, musicVolume, musicMuted, concert, onAutoplayBlocked]);
 
@@ -883,7 +903,7 @@ function StageYouTubeCurtains({
                     }
                   }}
                   title={isActive ? 'Stage Video Screen' : `Preloaded Stage Track (${vid})`}
-                  src={`https://www.youtube.com/embed/${vid}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&mute=1`}
+                  src={`https://www.youtube.com/embed/${vid}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&mute=1${getYtOriginParam()}`}
                   allow="autoplay; encrypted-media"
                   style={
                     transitionVisual?.active
@@ -988,6 +1008,7 @@ function KaraokeBackLyricsScreen({
   const ytDurationRef = useRef(0);
   const ytStateRef = useRef(-1);
   const lastSeekAtRef = useRef(0);
+  const loadedAtRef = useRef(performance.now());
 
   const setSyncedState = (val: boolean) => {
     if (ytSyncedRef.current !== val) {
@@ -1021,6 +1042,7 @@ function KaraokeBackLyricsScreen({
     ytDurationRef.current = 0;
     ytStateRef.current = -1;
     lastSeekAtRef.current = 0;
+    loadedAtRef.current = performance.now();
   }, [youtubeVideoId]);
 
   useEffect(() => {
@@ -1076,7 +1098,7 @@ function KaraokeBackLyricsScreen({
         const dur = ytDurationRef.current;
         const rawDiff = Math.abs(ytTimeRef.current - targetSec);
         const circularDiff = dur > 1 ? Math.min(rawDiff, dur - rawDiff) : rawDiff;
-        if (targetSec <= 1.5 || circularDiff <= 2.5) {
+        if (targetSec <= 1.5 || circularDiff <= 2.5 || performance.now() - loadedAtRef.current > 2200) {
           setSyncedState(true);
           setYtActiveVisual(true);
         } else if (performance.now() - lastSeekAtRef.current > 700) {
@@ -1124,6 +1146,18 @@ function KaraokeBackLyricsScreen({
       const circularDiff = dur > 1 ? Math.min(rawDiff, dur - rawDiff) : rawDiff;
 
       sendYtCmd(iframe, 'mute');
+      if (ytStateRef.current === -1) {
+        iframe.contentWindow?.postMessage(JSON.stringify({ event: 'listening' }), '*');
+      }
+      if (!ytSyncedRef.current && now - loadedAtRef.current > 2400) {
+        setSyncedState(true);
+        setYtActiveVisual(true);
+        if (targetSec > 1.5 && now - lastSeekAtRef.current > 1000) {
+          lastSeekAtRef.current = now;
+          sendYtCmd(iframe, 'seekTo', [targetSec, true]);
+        }
+        sendYtCmd(iframe, 'playVideo');
+      }
       if (
         ytStateRef.current === 1 &&
         ytTimeRef.current > 0 &&
@@ -1135,7 +1169,7 @@ function KaraokeBackLyricsScreen({
       } else if (ytStateRef.current !== 1 && ytStateRef.current !== 3) {
         sendYtCmd(iframe, 'playVideo');
       }
-    }, 2000);
+    }, 1500);
     return () => clearInterval(timer);
   }, [showVideo, isPlaying, concert]);
 
@@ -1210,7 +1244,7 @@ function KaraokeBackLyricsScreen({
                 }
               }}
               title="Karaoke Rear Lyrics Screen"
-              src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&mute=1`}
+              src={`https://www.youtube.com/embed/${youtubeVideoId}?autoplay=1&controls=0&modestbranding=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&playsinline=1&enablejsapi=1&mute=1${getYtOriginParam()}`}
               allow="autoplay; encrypted-media"
               style={
                 transitionVisual?.active
